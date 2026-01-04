@@ -10,6 +10,8 @@ const setupDatabase = async () => {
       CREATE TABLE IF NOT EXISTS users (
         id INT AUTO_INCREMENT PRIMARY KEY,
         login VARCHAR(50) UNIQUE NOT NULL,
+        name VARCHAR(100),
+        role ENUM('ADMIN', 'USER') DEFAULT 'USER',
         password_hash VARCHAR(255) NOT NULL
       )
     `);
@@ -35,7 +37,7 @@ const setupDatabase = async () => {
     
     if (existingUsers.length === 0) {
       const hashedPassword = await bcrypt.hash(defaultPassword, 10);
-      await db.execute('INSERT INTO users (login, password_hash) VALUES (?, ?)', [defaultLogin, hashedPassword]);
+      await db.execute('INSERT INTO users (login, name, role, password_hash) VALUES (?, ?, ?, ?)', [defaultLogin, 'Admin User', 'ADMIN', hashedPassword]);
       console.log(`Default user created: ${defaultLogin} / ${defaultPassword}`);
     } else {
       console.log('Default user already exists');

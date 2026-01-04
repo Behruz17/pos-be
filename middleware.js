@@ -18,7 +18,7 @@ const authMiddleware = async (req, res, next) => {
 
     const userId = rows[0].user_id;
     
-    const [userRows] = await db.execute('SELECT id, login FROM users WHERE id = ?', [userId]);
+    const [userRows] = await db.execute('SELECT id, login, name, role FROM users WHERE id = ?', [userId]);
     
     if (userRows.length === 0) {
       return res.status(401).json({ error: 'User not found' });

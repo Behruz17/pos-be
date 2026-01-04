@@ -17,7 +17,9 @@
   "token": "токен_пользователя",
   "user": {
     "id": 1,
-    "login": "admin"
+    "login": "admin",
+    "name": "Admin User",
+    "role": "ADMIN"
   }
 }
 ```
@@ -41,7 +43,33 @@
 ```json
 {
   "id": 1,
-  "login": "admin"
+  "login": "admin",
+  "name": "Admin User",
+  "role": "ADMIN"
+}
+```
+
+### POST /api/auth/register
+**Назначение:** Создание нового пользователя (только для администраторов)  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Тело запроса:**
+```json
+{
+  "login": "string",
+  "password": "string",
+  "name": "Имя пользователя (необязательно)",
+  "role": "USER" (по умолчанию) или "ADMIN"
+}
+```
+**Ответ:**
+```json
+{
+  "id": 2,
+  "login": "user",
+  "name": "Имя пользователя",
+  "role": "USER",
+  "message": "User created successfully"
 }
 ```
 

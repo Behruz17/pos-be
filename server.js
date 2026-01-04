@@ -30,7 +30,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     // Find user by login
-    const [users] = await db.execute('SELECT id, login, password_hash FROM users WHERE login = ?', [login]);
+    const [users] = await db.execute('SELECT id, login, name, role, password_hash FROM users WHERE login = ?', [login]);
     
     if (users.length === 0) {
       return res.status(401).json({ error: 'Invalid login or password' });
@@ -64,7 +64,9 @@ app.post('/api/auth/login', async (req, res) => {
       token,
       user: {
         id: user.id,
-        login: user.login
+        login: user.login,
+        name: user.name,
+        role: user.role
       }
     });
   } catch (error) {
@@ -91,10 +93,56 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
   try {
     res.json({
       id: req.user.id,
-      login: req.user.login
+      login: req.user.login,
+      name: req.user.name,
+      role: req.user.role
     });
   } catch (error) {
     console.error('Get user error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/auth/register
+app.post('/api/auth/register', authMiddleware, async (req, res) => {
+  try {
+    // Check if the current user is an admin
+    if (req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Only administrators can create new users' });
+    }
+
+    const { login, password, name, role = 'USER' } = req.body;
+
+    // Validate required fields
+    if (!login || !password) {
+      return res.status(400).json({ error: 'Login and password are required' });
+    }
+
+    // Check if user already exists
+    const [existingUsers] = await db.execute('SELECT id FROM users WHERE login = ?', [login]);
+    
+    if (existingUsers.length > 0) {
+      return res.status(400).json({ error: 'User with this login already exists' });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    // Create user
+    const [result] = await db.execute(
+      'INSERT INTO users (login, name, role, password_hash) VALUES (?, ?, ?, ?)',
+      [login, name || null, role, hashedPassword]
+    );
+
+    res.status(201).json({
+      id: result.insertId,
+      login,
+      name,
+      role,
+      message: 'User created successfully'
+    });
+  } catch (error) {
+    console.error('User registration error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
