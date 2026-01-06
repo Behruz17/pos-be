@@ -614,6 +614,154 @@ app.get('/api/stock/history/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// Customer Management Routes
+
+// POST /api/customers
+app.post('/api/customers', authMiddleware, async (req, res) => {
+  try {
+    const { full_name, phone, city } = req.body;
+
+    if (!full_name) {
+      return res.status(400).json({ error: 'Full name is required' });
+    }
+
+    const [result] = await db.execute(
+      'INSERT INTO customers (full_name, phone, city) VALUES (?, ?, ?)',
+      [full_name, phone || null, city || null]
+    );
+
+    res.status(201).json({
+      id: result.insertId,
+      full_name,
+      phone,
+      city,
+      balance: 0,
+      message: 'Customer created successfully'
+    });
+  } catch (error) {
+    console.error('Add customer error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/customers
+app.get('/api/customers', authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await db.execute('SELECT id, full_name, phone, city, balance, created_at, updated_at FROM customers ORDER BY created_at DESC');
+    res.json(rows);
+  } catch (error) {
+    console.error('Get customers error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/customers/:id
+app.get('/api/customers/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await db.execute('SELECT id, full_name, phone, city, balance, created_at, updated_at FROM customers WHERE id = ?', [id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+
+    res.json(rows[0]);
+  } catch (error) {
+    console.error('Get customer error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PUT /api/customers/:id
+app.put('/api/customers/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { full_name, phone, city } = req.body;
+
+    if (!full_name) {
+      return res.status(400).json({ error: 'Full name is required' });
+    }
+
+    const [result] = await db.execute(
+      'UPDATE customers SET full_name = ?, phone = ?, city = ? WHERE id = ?',
+      [full_name, phone || null, city || null, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+
+    const [updatedCustomer] = await db.execute('SELECT id, full_name, phone, city, balance, created_at, updated_at FROM customers WHERE id = ?', [id]);
+    
+    res.json({
+      ...updatedCustomer[0],
+      message: 'Customer updated successfully'
+    });
+  } catch (error) {
+    console.error('Update customer error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// DELETE /api/customers/:id
+app.delete('/api/customers/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [result] = await db.execute('DELETE FROM customers WHERE id = ?', [id]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+
+    res.json({ message: 'Customer deleted successfully' });
+  } catch (error) {
+    console.error('Delete customer error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/customers/:id/update-balance
+app.post('/api/customers/:id/update-balance', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amount, operation, reason } = req.body; // operation: 'add' or 'subtract'
+
+    if (!amount || !operation) {
+      return res.status(400).json({ error: 'Amount and operation are required' });
+    }
+
+    // Get current balance
+    const [currentCustomer] = await db.execute('SELECT balance FROM customers WHERE id = ?', [id]);
+    
+    if (currentCustomer.length === 0) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+
+    let newBalance;
+    if (operation === 'add') {
+      newBalance = parseFloat(currentCustomer[0].balance) + parseFloat(amount);
+    } else if (operation === 'subtract') {
+      newBalance = parseFloat(currentCustomer[0].balance) - parseFloat(amount);
+    } else {
+      return res.status(400).json({ error: 'Operation must be "add" or "subtract"' });
+    }
+
+    // Update balance
+    await db.execute('UPDATE customers SET balance = ? WHERE id = ?', [newBalance, id]);
+
+    res.json({
+      id,
+      new_balance: newBalance,
+      message: 'Customer balance updated successfully'
+    });
+  } catch (error) {
+    console.error('Update customer balance error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Start server and initialize database
 const startServer = async () => {
   try {

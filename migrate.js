@@ -152,6 +152,21 @@ const setupDatabase = async () => {
     
     console.log('Stock changes history table created/verified');
     
+    // Create customers table
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS customers (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        full_name VARCHAR(255) NOT NULL,
+        phone VARCHAR(50),
+        city VARCHAR(100),
+        balance DECIMAL(10, 2) DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+    
+    console.log('Customers table created/verified');
+    
     console.log('Database setup completed successfully');
   } catch (error) {
     console.error('Error setting up database:', error);
