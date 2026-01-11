@@ -198,6 +198,39 @@ const setupDatabase = async () => {
     
     console.log('Sale items table created/verified');
     
+    // Create returns table
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS returns (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        customer_id INT,
+        total_amount DECIMAL(10, 2) NOT NULL,
+        created_by INT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        sale_id INT,
+        FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE SET NULL
+      )
+    `);
+    
+    console.log('Returns table created/verified');
+    
+    // Create return items table
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS return_items (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        return_id INT NOT NULL,
+        product_id INT NOT NULL,
+        quantity INT NOT NULL,
+        unit_price DECIMAL(10, 2) NOT NULL,
+        total_price DECIMAL(10, 2) NOT NULL,
+        FOREIGN KEY (return_id) REFERENCES returns(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+      )
+    `);
+    
+    console.log('Return items table created/verified');
+    
     // Create demo customer if none exists
     const [existingDemoCustomer] = await db.execute('SELECT id FROM customers WHERE full_name = ?', ['Demo Customer']);
     if (existingDemoCustomer.length === 0) {

@@ -567,3 +567,82 @@
   ]
 }
 ```
+
+## 9. Возвраты
+
+### POST /api/returns
+**Назначение:** Создание нового возврата  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Тело запроса:**
+```json
+{
+  "customer_id": 1 (необязательно, если не указан - используется демо-клиент),
+  "sale_id": 1 (необязательно, ID исходной продажи),
+  "items": [
+    {
+      "product_id": 1,
+      "quantity": 1,
+      "unit_price": 500.00
+    }
+  ]
+}
+```
+**Ответ:**
+```json
+{
+  "id": 1,
+  "message": "Return created successfully"
+}
+```
+
+### GET /api/returns
+**Назначение:** Получение списка всех возвратов  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Ответ:**
+```json
+[
+  {
+    "id": 1,
+    "customer_id": 1,
+    "customer_name": "Ф.И.О. клиента",
+    "total_amount": 500.00,
+    "created_by": 1,
+    "created_by_name": "admin",
+    "created_at": "2023-01-01T00:00:00.000Z",
+    "sale_id": 1
+  }
+]
+```
+
+### GET /api/returns/:id
+**Назначение:** Получение информации о конкретном возврате  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `id` - ID возврата
+**Ответ:**
+```json
+{
+  "id": 1,
+  "customer_id": 1,
+  "customer_name": "Ф.И.О. клиента",
+  "total_amount": 500.00,
+  "created_by": 1,
+  "created_by_name": "admin",
+  "created_at": "2023-01-01T00:00:00.000Z",
+  "sale_id": 1,
+  "items": [
+    {
+      "id": 1,
+      "product_id": 1,
+      "product_name": "Название товара",
+      "manufacturer": "Производитель",
+      "quantity": 1,
+      "unit_price": 500.00,
+      "total_price": 500.00
+    }
+  ]
+}
+```

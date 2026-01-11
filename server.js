@@ -951,6 +951,169 @@ app.get('/api/sales/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// Returns Management Routes
+
+// POST /api/returns
+app.post('/api/returns', authMiddleware, async (req, res) => {
+  try {
+    const { customer_id, sale_id, items } = req.body;
+
+    // Validate required fields
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items array is required' });
+    }
+
+    // Validate each item
+    for (const item of items) {
+      if (!item.product_id || !item.quantity || !item.unit_price) {
+        return res.status(400).json({ error: 'Each item must have product_id, quantity, and unit_price' });
+      }
+    }
+
+    // Get demo customer if no customer is provided
+    let customerId = customer_id;
+    if (!customerId) {
+      const [demoCustomer] = await db.execute('SELECT id FROM customers WHERE full_name = ?', ['Demo Customer']);
+      if (demoCustomer.length > 0) {
+        customerId = demoCustomer[0].id;
+      } else {
+        return res.status(500).json({ error: 'Demo customer not found' });
+      }
+    }
+
+    // Start transaction
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Calculate total amount
+      const total_amount = items.reduce((sum, item) => sum + (parseFloat(item.unit_price) * parseInt(item.quantity)), 0);
+
+      // Create return
+      const [returnResult] = await connection.execute(
+        'INSERT INTO returns (customer_id, total_amount, created_by, sale_id) VALUES (?, ?, ?, ?)',
+        [customerId, total_amount, req.user.id, sale_id || null]
+      );
+      const returnId = returnResult.insertId;
+
+      // Process each item in the return
+      for (const item of items) {
+        const totalPrice = parseFloat(item.unit_price) * parseInt(item.quantity);
+        
+        // Insert return item
+        await connection.execute(
+          'INSERT INTO return_items (return_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)',
+          [returnId, item.product_id, item.quantity, item.unit_price, totalPrice]
+        );
+
+        // Update warehouse stock (add back the returned items)
+        const [stockRows] = await connection.execute(
+          'SELECT id, boxes_qty, pieces_qty FROM warehouse_stock WHERE product_id = ?',
+          [item.product_id]
+        );
+
+        if (stockRows.length > 0) {
+          // Update existing stock
+          const currentStock = stockRows[0];
+          const newPiecesQty = currentStock.pieces_qty + parseInt(item.quantity);
+          
+          await connection.execute(
+            'UPDATE warehouse_stock SET pieces_qty = ? WHERE id = ?',
+            [newPiecesQty, currentStock.id]
+          );
+        } else {
+          // Create new stock record if none exists
+          await connection.execute(
+            'INSERT INTO warehouse_stock (warehouse_id, product_id, boxes_qty, pieces_qty) VALUES (?, ?, 0, ?)',
+            [1, item.product_id, parseInt(item.quantity)] // Using default warehouse ID 1
+          );
+        }
+      }
+
+      // Update customer balance (refund the returned amount)
+      await connection.execute(
+        'UPDATE customers SET balance = balance + ? WHERE id = ?',
+        [total_amount, customerId]
+      );
+
+      // Commit transaction
+      await connection.commit();
+      connection.release();
+
+      res.status(201).json({
+        id: returnId,
+        message: 'Return created successfully'
+      });
+    } catch (error) {
+      await connection.rollback();
+      connection.release();
+      throw error;
+    }
+  } catch (error) {
+    console.error('Create return error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/returns
+app.get('/api/returns', authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT r.id, r.customer_id, c.full_name as customer_name, r.total_amount, r.created_by, 
+              u.login as created_by_name, r.created_at, r.sale_id
+       FROM returns r
+       LEFT JOIN customers c ON r.customer_id = c.id
+       JOIN users u ON r.created_by = u.id
+       ORDER BY r.created_at DESC`
+    );
+
+    res.json(rows);
+  } catch (error) {
+    console.error('Get returns error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/returns/:id
+app.get('/api/returns/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get return header
+    const [returnRows] = await db.execute(
+      `SELECT r.id, r.customer_id, c.full_name as customer_name, r.total_amount, r.created_by, 
+              u.login as created_by_name, r.created_at, r.sale_id
+       FROM returns r
+       LEFT JOIN customers c ON r.customer_id = c.id
+       JOIN users u ON r.created_by = u.id
+       WHERE r.id = ?`,
+      [id]
+    );
+
+    if (returnRows.length === 0) {
+      return res.status(404).json({ error: 'Return not found' });
+    }
+
+    // Get return items
+    const [itemRows] = await db.execute(
+      `SELECT ri.id, ri.product_id, p.name as product_name, p.manufacturer, ri.quantity,
+              ri.unit_price, ri.total_price
+       FROM return_items ri
+       JOIN products p ON ri.product_id = p.id
+       WHERE ri.return_id = ?`,
+      [id]
+    );
+
+    res.json({
+      ...returnRows[0],
+      items: itemRows
+    });
+  } catch (error) {
+    console.error('Get return error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Start server and initialize database
 const startServer = async () => {
   try {
