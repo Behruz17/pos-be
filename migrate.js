@@ -167,6 +167,46 @@ const setupDatabase = async () => {
     
     console.log('Customers table created/verified');
     
+    // Create sales table
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS sales (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        customer_id INT,
+        total_amount DECIMAL(10, 2) NOT NULL,
+        created_by INT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+    
+    console.log('Sales table created/verified');
+    
+    // Create sale items table
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS sale_items (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        sale_id INT NOT NULL,
+        product_id INT NOT NULL,
+        quantity INT NOT NULL,
+        unit_price DECIMAL(10, 2) NOT NULL,
+        total_price DECIMAL(10, 2) NOT NULL,
+        FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+      )
+    `);
+    
+    console.log('Sale items table created/verified');
+    
+    // Create demo customer if none exists
+    const [existingDemoCustomer] = await db.execute('SELECT id FROM customers WHERE full_name = ?', ['Demo Customer']);
+    if (existingDemoCustomer.length === 0) {
+      await db.execute('INSERT INTO customers (full_name, phone, city, balance) VALUES (?, ?, ?, ?)', ['Demo Customer', null, null, 0]);
+      console.log('Demo customer created');
+    } else {
+      console.log('Demo customer already exists');
+    }
+    
     console.log('Database setup completed successfully');
   } catch (error) {
     console.error('Error setting up database:', error);

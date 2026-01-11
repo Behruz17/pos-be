@@ -491,3 +491,79 @@
   "message": "Customer balance updated successfully"
 }
 ```
+
+## 8. Продажи
+
+### POST /api/sales
+**Назначение:** Создание новой продажи  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Тело запроса:**
+```json
+{
+  "customer_id": 1 (необязательно, если не указан - используется демо-клиент),
+  "items": [
+    {
+      "product_id": 1,
+      "quantity": 2,
+      "unit_price": 500.00
+    }
+  ]
+}
+```
+**Ответ:**
+```json
+{
+  "id": 1,
+  "message": "Sale created successfully"
+}
+```
+
+### GET /api/sales
+**Назначение:** Получение списка всех продаж  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Ответ:**
+```json
+[
+  {
+    "id": 1,
+    "customer_id": 1,
+    "customer_name": "Ф.И.О. клиента",
+    "total_amount": 1000.00,
+    "created_by": 1,
+    "created_by_name": "admin",
+    "created_at": "2023-01-01T00:00:00.000Z"
+  }
+]
+```
+
+### GET /api/sales/:id
+**Назначение:** Получение информации о конкретной продаже  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `id` - ID продажи
+**Ответ:**
+```json
+{
+  "id": 1,
+  "customer_id": 1,
+  "customer_name": "Ф.И.О. клиента",
+  "total_amount": 1000.00,
+  "created_by": 1,
+  "created_by_name": "admin",
+  "created_at": "2023-01-01T00:00:00.000Z",
+  "items": [
+    {
+      "id": 1,
+      "product_id": 1,
+      "product_name": "Название товара",
+      "manufacturer": "Производитель",
+      "quantity": 2,
+      "unit_price": 500.00,
+      "total_price": 1000.00
+    }
+  ]
+}
+```

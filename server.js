@@ -762,6 +762,195 @@ app.post('/api/customers/:id/update-balance', authMiddleware, async (req, res) =
   }
 });
 
+// Sales Management Routes
+
+// POST /api/sales
+app.post('/api/sales', authMiddleware, async (req, res) => {
+  try {
+    const { customer_id, items } = req.body;
+
+    // Validate required fields
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items array is required' });
+    }
+
+    // Validate each item
+    for (const item of items) {
+      if (!item.product_id || !item.quantity || !item.unit_price) {
+        return res.status(400).json({ error: 'Each item must have product_id, quantity, and unit_price' });
+      }
+    }
+
+    // Get demo customer if no customer is provided
+    let customerId = customer_id;
+    if (!customerId) {
+      const [demoCustomer] = await db.execute('SELECT id FROM customers WHERE full_name = ?', ['Demo Customer']);
+      if (demoCustomer.length > 0) {
+        customerId = demoCustomer[0].id;
+      } else {
+        return res.status(500).json({ error: 'Demo customer not found' });
+      }
+    }
+
+    // Start transaction
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Calculate total amount
+      const total_amount = items.reduce((sum, item) => sum + (parseFloat(item.unit_price) * parseInt(item.quantity)), 0);
+
+      // Create sale
+      const [saleResult] = await connection.execute(
+        'INSERT INTO sales (customer_id, total_amount, created_by) VALUES (?, ?, ?)',
+        [customerId, total_amount, req.user.id]
+      );
+      const saleId = saleResult.insertId;
+
+      // Process each item in the sale
+      for (const item of items) {
+        const totalPrice = parseFloat(item.unit_price) * parseInt(item.quantity);
+        
+        // Insert sale item
+        await connection.execute(
+          'INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)',
+          [saleId, item.product_id, item.quantity, item.unit_price, totalPrice]
+        );
+
+        // Update warehouse stock
+        const [stockRows] = await connection.execute(
+          'SELECT id, boxes_qty, pieces_qty FROM warehouse_stock WHERE product_id = ?',
+          [item.product_id]
+        );
+
+        if (stockRows.length > 0) {
+          const currentStock = stockRows[0];
+          // For simplicity, we're reducing from pieces_qty first
+          let remainingQuantity = parseInt(item.quantity);
+          let newPiecesQty = currentStock.pieces_qty;
+          let newBoxesQty = currentStock.boxes_qty;
+
+          // Reduce from pieces first
+          if (newPiecesQty >= remainingQuantity) {
+            newPiecesQty -= remainingQuantity;
+            remainingQuantity = 0;
+          } else {
+            remainingQuantity -= newPiecesQty;
+            newPiecesQty = 0;
+            
+            // Then reduce from boxes
+            if (newBoxesQty > 0) {
+              // Convert boxes to pieces equivalent if needed
+              // In this simplified version, we assume 1 box = 1 piece for calculation
+              if (newBoxesQty >= remainingQuantity) {
+                newBoxesQty -= remainingQuantity;
+                remainingQuantity = 0;
+              } else {
+                newBoxesQty = 0;
+                remainingQuantity -= newBoxesQty;
+              }
+            }
+          }
+
+          if (remainingQuantity > 0) {
+            // Not enough stock
+            await connection.rollback();
+            connection.release();
+            return res.status(400).json({ error: `Not enough stock for product ID: ${item.product_id}` });
+          }
+
+          // Update stock
+          await connection.execute(
+            'UPDATE warehouse_stock SET boxes_qty = ?, pieces_qty = ? WHERE id = ?',
+            [newBoxesQty, newPiecesQty, currentStock.id]
+          );
+        }
+      }
+
+      // Update customer balance (subtract the purchase amount)
+      await connection.execute(
+        'UPDATE customers SET balance = balance - ? WHERE id = ?',
+        [total_amount, customerId]
+      );
+
+      // Commit transaction
+      await connection.commit();
+      connection.release();
+
+      res.status(201).json({
+        id: saleId,
+        message: 'Sale created successfully'
+      });
+    } catch (error) {
+      await connection.rollback();
+      connection.release();
+      throw error;
+    }
+  } catch (error) {
+    console.error('Create sale error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/sales
+app.get('/api/sales', authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT s.id, s.customer_id, c.full_name as customer_name, s.total_amount, s.created_by, 
+              u.login as created_by_name, s.created_at
+       FROM sales s
+       LEFT JOIN customers c ON s.customer_id = c.id
+       JOIN users u ON s.created_by = u.id
+       ORDER BY s.created_at DESC`
+    );
+
+    res.json(rows);
+  } catch (error) {
+    console.error('Get sales error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/sales/:id
+app.get('/api/sales/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get sale header
+    const [saleRows] = await db.execute(
+      `SELECT s.id, s.customer_id, c.full_name as customer_name, s.total_amount, s.created_by, 
+              u.login as created_by_name, s.created_at
+       FROM sales s
+       LEFT JOIN customers c ON s.customer_id = c.id
+       JOIN users u ON s.created_by = u.id
+       WHERE s.id = ?`,
+      [id]
+    );
+
+    if (saleRows.length === 0) {
+      return res.status(404).json({ error: 'Sale not found' });
+    }
+
+    // Get sale items
+    const [itemRows] = await db.execute(
+      `SELECT si.id, si.product_id, p.name as product_name, p.manufacturer, si.quantity,
+              si.unit_price, si.total_price
+       FROM sale_items si
+       JOIN products p ON si.product_id = p.id
+       WHERE si.sale_id = ?`,
+      [id]
+    );
+
+    res.json({
+      ...saleRows[0],
+      items: itemRows
+    });
+  } catch (error) {
+    console.error('Get sale error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Start server and initialize database
 const startServer = async () => {
   try {
