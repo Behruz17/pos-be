@@ -73,6 +73,81 @@
 }
 ```
 
+## 10. Управление пользователями (только для администраторов)
+
+### GET /api/users
+**Назначение:** Получение списка всех пользователей  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Ответ:**
+```json
+[
+  {
+    "id": 1,
+    "login": "admin",
+    "name": "Admin User",
+    "role": "ADMIN",
+    "created_at": "2023-01-01T00:00:00.000Z"
+  }
+]
+```
+
+### GET /api/users/:id
+**Назначение:** Получение информации о конкретном пользователе  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `id` - ID пользователя
+**Ответ:**
+```json
+{
+  "id": 1,
+  "login": "admin",
+  "name": "Admin User",
+  "role": "ADMIN",
+  "created_at": "2023-01-01T00:00:00.000Z"
+}
+```
+
+### PUT /api/users/:id
+**Назначение:** Обновление информации о пользователе  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `id` - ID пользователя
+**Тело запроса:**
+```json
+{
+  "login": "new_login",
+  "name": "Новое имя пользователя",
+  "role": "USER" или "ADMIN"
+}
+```
+**Ответ:**
+```json
+{
+  "id": 1,
+  "login": "new_login",
+  "name": "Новое имя пользователя",
+  "role": "USER",
+  "created_at": "2023-01-01T00:00:00.000Z",
+  "message": "User updated successfully"
+}
+```
+
+### DELETE /api/users/:id
+**Назначение:** Удаление пользователя  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `id` - ID пользователя
+**Ответ:**
+```json
+{
+  "message": "User deleted successfully"
+}
+```
+
 ## 2. Управление складами
 
 ### POST /api/warehouses

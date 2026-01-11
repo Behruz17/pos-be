@@ -147,6 +147,111 @@ app.post('/api/auth/register', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/users
+app.get('/api/users', authMiddleware, async (req, res) => {
+  try {
+    // Check if the current user is an admin
+    if (req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Only administrators can view user list' });
+    }
+
+    const [rows] = await db.execute('SELECT id, login, name, role, created_at FROM users ORDER BY created_at DESC');
+    
+    res.json(rows);
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/users/:id
+app.get('/api/users/:id', authMiddleware, async (req, res) => {
+  try {
+    // Check if the current user is an admin
+    if (req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Only administrators can view user details' });
+    }
+
+    const { id } = req.params;
+
+    const [rows] = await db.execute('SELECT id, login, name, role, created_at FROM users WHERE id = ?', [id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json(rows[0]);
+  } catch (error) {
+    console.error('Get user error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PUT /api/users/:id
+app.put('/api/users/:id', authMiddleware, async (req, res) => {
+  try {
+    // Check if the current user is an admin
+    if (req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Only administrators can update users' });
+    }
+
+    const { id } = req.params;
+    const { login, name, role } = req.body;
+
+    // Prevent changing own role to avoid admin lockout
+    if (parseInt(id) === req.user.id && role && role !== req.user.role) {
+      return res.status(400).json({ error: 'Administrators cannot change their own role' });
+    }
+
+    const [result] = await db.execute(
+      'UPDATE users SET login = ?, name = ?, role = ? WHERE id = ?',
+      [login, name || null, role, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const [updatedUser] = await db.execute('SELECT id, login, name, role, created_at FROM users WHERE id = ?', [id]);
+    
+    res.json({
+      ...updatedUser[0],
+      message: 'User updated successfully'
+    });
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// DELETE /api/users/:id
+app.delete('/api/users/:id', authMiddleware, async (req, res) => {
+  try {
+    // Check if the current user is an admin
+    if (req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Only administrators can delete users' });
+    }
+
+    const { id } = req.params;
+
+    // Prevent admin from deleting themselves
+    if (parseInt(id) === req.user.id) {
+      return res.status(400).json({ error: 'Administrators cannot delete themselves' });
+    }
+
+    const [result] = await db.execute('DELETE FROM users WHERE id = ?', [id]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({ message: 'User deleted successfully' });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Inventory Management Routes
 
 // POST /api/products
