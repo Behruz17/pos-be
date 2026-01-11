@@ -722,6 +722,70 @@ app.delete('/api/customers/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/customers/:id/details
+app.get('/api/customers/:id/details', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get customer info
+    const [customerRows] = await db.execute(
+      'SELECT id, full_name, phone, city, balance, created_at, updated_at FROM customers WHERE id = ?',
+      [id]
+    );
+
+    if (customerRows.length === 0) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+
+    const customer = customerRows[0];
+
+    // Get customer's sales
+    const [sales] = await db.execute(
+      `SELECT s.id, s.total_amount, s.created_at as transaction_date, 'sale' as transaction_type
+       FROM sales s
+       WHERE s.customer_id = ?
+       ORDER BY s.created_at DESC`,
+      [id]
+    );
+
+    // Get customer's returns
+    const [returns] = await db.execute(
+      `SELECT r.id, r.total_amount, r.created_at as transaction_date, 'return' as transaction_type
+       FROM returns r
+       WHERE r.customer_id = ?
+       ORDER BY r.created_at DESC`,
+      [id]
+    );
+
+    // Combine and sort all transactions
+    const allTransactions = [
+      ...sales.map(s => ({
+        id: s.id,
+        amount: s.total_amount,
+        date: s.transaction_date,
+        type: s.transaction_type
+      })),
+      ...returns.map(r => ({
+        id: r.id,
+        amount: r.total_amount,
+        date: r.transaction_date,
+        type: r.transaction_type
+      }))
+    ];
+
+    // Sort by date (newest first)
+    allTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    res.json({
+      ...customer,
+      transactions: allTransactions
+    });
+  } catch (error) {
+    console.error('Get customer details error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // POST /api/customers/:id/update-balance
 app.post('/api/customers/:id/update-balance', authMiddleware, async (req, res) => {
   try {
