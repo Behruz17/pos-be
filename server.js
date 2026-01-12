@@ -133,12 +133,15 @@ app.post('/api/auth/register', authMiddleware, async (req, res) => {
       'INSERT INTO users (login, name, role, password_hash) VALUES (?, ?, ?, ?)',
       [login, name || null, role, hashedPassword]
     );
+    
+    // Get the newly created user with created_at
+    const [newUser] = await db.execute(
+      'SELECT id, login, name, role, created_at FROM users WHERE id = ?',
+      [result.insertId]
+    );
 
     res.status(201).json({
-      id: result.insertId,
-      login,
-      name,
-      role,
+      ...newUser[0],
       message: 'User created successfully'
     });
   } catch (error) {

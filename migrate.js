@@ -12,11 +12,28 @@ const setupDatabase = async () => {
         login VARCHAR(50) UNIQUE NOT NULL,
         name VARCHAR(100),
         role ENUM('ADMIN', 'USER') DEFAULT 'USER',
-        password_hash VARCHAR(255) NOT NULL
+        password_hash VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
     
     console.log('Users table created/verified');
+    
+    // Add created_at column if it doesn't exist
+    try {
+      await db.execute(`
+        ALTER TABLE users 
+        ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      `);
+      console.log('Created_at column added to users table');
+    } catch (error) {
+      // If column already exists, we'll get an error, which is OK
+      if (error.code === 'ER_DUP_FIELDNAME') {
+        console.log('Created_at column already exists in users table');
+      } else {
+        console.log('Created_at column already exists or other error:', error.message);
+      }
+    }
     
     // Create tokens table
     await db.execute(`
