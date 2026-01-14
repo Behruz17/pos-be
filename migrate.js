@@ -66,11 +66,28 @@ const setupDatabase = async () => {
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
         manufacturer VARCHAR(255),
+        image VARCHAR(500),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
     
     console.log('Products table created/verified');
+    
+    // Add image column if it doesn't exist
+    try {
+      await db.execute(`
+        ALTER TABLE products 
+        ADD COLUMN image VARCHAR(500)
+      `);
+      console.log('Image column added to products table');
+    } catch (error) {
+      // If column already exists, we'll get an error, which is OK
+      if (error.code === 'ER_DUP_FIELDNAME') {
+        console.log('Image column already exists in products table');
+      } else {
+        console.log('Image column already exists or other error:', error.message);
+      }
+    }
     
     // Create warehouses table
     await db.execute(`

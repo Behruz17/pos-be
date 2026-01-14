@@ -260,21 +260,22 @@ app.delete('/api/users/:id', authMiddleware, async (req, res) => {
 // POST /api/products
 app.post('/api/products', authMiddleware, async (req, res) => {
   try {
-    const { name, manufacturer } = req.body;
+    const { name, manufacturer, image } = req.body;
 
     if (!name) {
       return res.status(400).json({ error: 'Product name is required' });
     }
 
     const [result] = await db.execute(
-      'INSERT INTO products (name, manufacturer) VALUES (?, ?)',
-      [name, manufacturer || null]
+      'INSERT INTO products (name, manufacturer, image) VALUES (?, ?, ?)',
+      [name, manufacturer || null, image || null]
     );
 
     res.status(201).json({
       id: result.insertId,
       name,
       manufacturer,
+      image,
       message: 'Product added successfully'
     });
   } catch (error) {
@@ -286,7 +287,7 @@ app.post('/api/products', authMiddleware, async (req, res) => {
 // GET /api/products
 app.get('/api/products', authMiddleware, async (req, res) => {
   try {
-    const [rows] = await db.execute('SELECT id, name, manufacturer, created_at FROM products ORDER BY created_at DESC');
+    const [rows] = await db.execute('SELECT id, name, manufacturer, image, created_at FROM products ORDER BY created_at DESC');
     res.json(rows);
   } catch (error) {
     console.error('Get products error:', error);
@@ -343,7 +344,7 @@ app.get('/api/warehouses/:id/products', authMiddleware, async (req, res) => {
     
     // Get products in the specified warehouse
     const [rows] = await db.execute(
-      `SELECT ws.id, ws.product_id, p.name as product_name, p.manufacturer, 
+      `SELECT ws.id, ws.product_id, p.name as product_name, p.manufacturer, p.image,
               ws.boxes_qty, ws.pieces_qty, ws.weight_kg, ws.volume_cbm, ws.updated_at
        FROM warehouse_stock ws
        JOIN products p ON ws.product_id = p.id
@@ -373,7 +374,7 @@ app.get('/api/warehouses/:warehouseId/products/:productId', authMiddleware, asyn
     }
     
     // Verify product exists
-    const [product] = await db.execute('SELECT id, name, manufacturer, created_at FROM products WHERE id = ?', [productId]);
+    const [product] = await db.execute('SELECT id, name, manufacturer, image, created_at FROM products WHERE id = ?', [productId]);
     if (product.length === 0) {
       return res.status(404).json({ error: 'Product not found' });
     }
@@ -534,7 +535,7 @@ app.get('/api/inventory/receipt/:id', authMiddleware, async (req, res) => {
 
     // Get receipt items
     const [itemRows] = await db.execute(
-      `SELECT sri.id, sri.product_id, p.name as product_name, p.manufacturer, sri.boxes_qty, sri.pieces_qty,
+      `SELECT sri.id, sri.product_id, p.name as product_name, p.manufacturer, p.image, sri.boxes_qty, sri.pieces_qty,
               sri.weight_kg, sri.volume_cbm, sri.amount
        FROM stock_receipt_items sri
        JOIN products p ON sri.product_id = p.id
@@ -744,7 +745,7 @@ app.get('/api/stock/history', authMiddleware, async (req, res) => {
   try {
     const [rows] = await db.execute(
       `SELECT sc.id, sc.warehouse_id, w.name as warehouse_name, sc.product_id, p.name as product_name,
-              p.manufacturer, sc.user_id, u.login as user_name, sc.change_type,
+              p.manufacturer, p.image, sc.user_id, u.login as user_name, sc.change_type,
               sc.old_boxes_qty, sc.new_boxes_qty, sc.old_pieces_qty, sc.new_pieces_qty,
               sc.old_weight_kg, sc.new_weight_kg, sc.old_volume_cbm, sc.new_volume_cbm,
               sc.reason, sc.created_at
@@ -769,7 +770,7 @@ app.get('/api/stock/history/:id', authMiddleware, async (req, res) => {
 
     const [rows] = await db.execute(
       `SELECT sc.id, sc.warehouse_id, w.name as warehouse_name, sc.product_id, p.name as product_name,
-              p.manufacturer, sc.user_id, u.login as user_name, sc.change_type,
+              p.manufacturer, p.image, sc.user_id, u.login as user_name, sc.change_type,
               sc.old_boxes_qty, sc.new_boxes_qty, sc.old_pieces_qty, sc.new_pieces_qty,
               sc.old_weight_kg, sc.new_weight_kg, sc.old_volume_cbm, sc.new_volume_cbm,
               sc.reason, sc.created_at
@@ -1175,7 +1176,7 @@ app.get('/api/sales/:id', authMiddleware, async (req, res) => {
 
     // Get sale items
     const [itemRows] = await db.execute(
-      `SELECT si.id, si.product_id, p.name as product_name, p.manufacturer, si.quantity,
+      `SELECT si.id, si.product_id, p.name as product_name, p.manufacturer, p.image, si.quantity,
               si.unit_price, si.total_price
        FROM sale_items si
        JOIN products p ON si.product_id = p.id
@@ -1338,7 +1339,7 @@ app.get('/api/returns/:id', authMiddleware, async (req, res) => {
 
     // Get return items
     const [itemRows] = await db.execute(
-      `SELECT ri.id, ri.product_id, p.name as product_name, p.manufacturer, ri.quantity,
+      `SELECT ri.id, ri.product_id, p.name as product_name, p.manufacturer, p.image, ri.quantity,
               ri.unit_price, ri.total_price
        FROM return_items ri
        JOIN products p ON ri.product_id = p.id

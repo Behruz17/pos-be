@@ -202,6 +202,7 @@
       "product_id": 1,
       "product_name": "Название товара",
       "manufacturer": "Производитель",
+      "image": "Ссылка на изображение товара",
       "boxes_qty": 10,
       "pieces_qty": 20,
       "weight_kg": 50.5,
@@ -230,6 +231,7 @@
     "id": 1,
     "name": "Название товара",
     "manufacturer": "Производитель",
+    "image": "Ссылка на изображение товара",
     "created_at": "2023-01-01T00:00:00.000Z"
   },
   "stock": {
@@ -253,7 +255,8 @@
 ```json
 {
   "name": "Название товара",
-  "manufacturer": "Производитель (необязательно)"
+  "manufacturer": "Производитель (необязательно)",
+  "image": "Ссылка на изображение товара (необязательно)"
 }
 ```
 **Ответ:**
@@ -262,6 +265,7 @@
   "id": 1,
   "name": "Название товара",
   "manufacturer": "Производитель",
+  "image": "Ссылка на изображение товара",
   "message": "Product added successfully"
 }
 ```
@@ -277,6 +281,7 @@
     "id": 1,
     "name": "Название товара",
     "manufacturer": "Производитель",
+    "image": "Ссылка на изображение товара",
     "created_at": "2023-01-01T00:00:00.000Z"
   }
 ]
@@ -353,6 +358,7 @@
       "product_id": 1,
       "product_name": "Название товара",
       "manufacturer": "Производитель",
+      "image": "Ссылка на изображение товара",
       "boxes_qty": 5,
       "pieces_qty": 10,
       "weight_kg": 25.5,
@@ -451,6 +457,7 @@
     "product_id": 1,
     "product_name": "Название товара",
     "manufacturer": "Производитель",
+    "image": "Ссылка на изображение товара",
     "user_id": 1,
     "user_name": "admin",
     "change_type": "ADJUSTMENT",
@@ -483,6 +490,7 @@
   "product_id": 1,
   "product_name": "Название товара",
   "manufacturer": "Производитель",
+  "image": "Ссылка на изображение товара",
   "user_id": 1,
   "user_name": "admin",
   "change_type": "ADJUSTMENT",
@@ -496,7 +504,7 @@
   "new_volume_cbm": 3.0,
   "reason": "Корректировка по инвентаризации",
   "created_at": "2023-01-01T00:00:00.000Z"
-}
+},
 ```
 
 ## 7. Управление клиентами
@@ -722,6 +730,7 @@
       "product_id": 1,
       "product_name": "Название товара",
       "manufacturer": "Производитель",
+      "image": "Ссылка на изображение товара",
       "quantity": 2,
       "unit_price": 500.00,
       "total_price": 1000.00
@@ -801,6 +810,7 @@
       "product_id": 1,
       "product_name": "Название товара",
       "manufacturer": "Производитель",
+      "image": "Ссылка на изображение товара",
       "quantity": 1,
       "unit_price": 500.00,
       "total_price": 500.00
