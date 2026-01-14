@@ -183,6 +183,31 @@
 ]
 ```
 
+### DELETE /api/warehouses/:id
+**Назначение:** Удаление склада  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `id` - ID склада
+**Ответ (успешный):**
+```json
+{
+  "message": "Warehouse deleted successfully"
+}
+```
+**Ответ (склад не найден):**
+```json
+{
+  "error": "Warehouse not found"
+}
+```
+**Ответ (склад содержит товары):**
+```json
+{
+  "error": "Cannot delete warehouse with existing stock. Please transfer or remove all products first."
+}
+```
+
 ### GET /api/warehouses/:id/products
 **Назначение:** Получение списка товаров в конкретном складе  
 **Заголовки:**
@@ -242,6 +267,37 @@
     "volume_cbm": 2.5,
     "updated_at": "2023-01-01T00:00:00.000Z"
   }
+}
+```
+
+### DELETE /api/products/:id
+**Назначение:** Удаление товара  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `id` - ID товара
+**Ответ (успешный):**
+```json
+{
+  "message": "Product deleted successfully"
+}
+```
+**Ответ (товар не найден):**
+```json
+{
+  "error": "Product not found"
+}
+```
+**Ответ (товар находится на складе):**
+```json
+{
+  "error": "Cannot delete product that is currently in stock. Please remove from all warehouses first."
+}
+```
+**Ответ (товар использован в операциях):**
+```json
+{
+  "error": "Cannot delete product that has been used in inventory receipts/sales/returns."
 }
 ```
 

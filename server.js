@@ -295,6 +295,66 @@ app.get('/api/products', authMiddleware, async (req, res) => {
   }
 });
 
+// DELETE /api/products/:id
+app.delete('/api/products/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if product exists
+    const [existingProduct] = await db.execute('SELECT id FROM products WHERE id = ?', [id]);
+    
+    if (existingProduct.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+    
+    // Check if product is used in any warehouse stock
+    const [stockCheck] = await db.execute('SELECT COUNT(*) as count FROM warehouse_stock WHERE product_id = ?', [id]);
+    
+    if (stockCheck[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete product that is currently in stock. Please remove from all warehouses first.' 
+      });
+    }
+    
+    // Check if product is used in any stock receipt items
+    const [receiptCheck] = await db.execute('SELECT COUNT(*) as count FROM stock_receipt_items WHERE product_id = ?', [id]);
+    
+    if (receiptCheck[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete product that has been used in inventory receipts.' 
+      });
+    }
+    
+    // Check if product is used in any sale items
+    const [saleCheck] = await db.execute('SELECT COUNT(*) as count FROM sale_items WHERE product_id = ?', [id]);
+    
+    if (saleCheck[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete product that has been sold.' 
+      });
+    }
+    
+    // Check if product is used in any return items
+    const [returnCheck] = await db.execute('SELECT COUNT(*) as count FROM return_items WHERE product_id = ?', [id]);
+    
+    if (returnCheck[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete product that has been returned.' 
+      });
+    }
+    
+    // Delete the product
+    await db.execute('DELETE FROM products WHERE id = ?', [id]);
+    
+    res.json({
+      message: 'Product deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete product error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // POST /api/warehouses
 app.post('/api/warehouses', authMiddleware, async (req, res) => {
   try {
@@ -327,6 +387,39 @@ app.get('/api/warehouses', authMiddleware, async (req, res) => {
     res.json(rows);
   } catch (error) {
     console.error('Get warehouses error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// DELETE /api/warehouses/:id
+app.delete('/api/warehouses/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if warehouse exists
+    const [existingWarehouse] = await db.execute('SELECT id FROM warehouses WHERE id = ?', [id]);
+    
+    if (existingWarehouse.length === 0) {
+      return res.status(404).json({ error: 'Warehouse not found' });
+    }
+    
+    // Check if warehouse has any stock
+    const [stockCheck] = await db.execute('SELECT COUNT(*) as count FROM warehouse_stock WHERE warehouse_id = ?', [id]);
+    
+    if (stockCheck[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete warehouse with existing stock. Please transfer or remove all products first.' 
+      });
+    }
+    
+    // Delete the warehouse
+    await db.execute('DELETE FROM warehouses WHERE id = ?', [id]);
+    
+    res.json({
+      message: 'Warehouse deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete warehouse error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
