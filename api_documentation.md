@@ -183,6 +183,66 @@
 ]
 ```
 
+### GET /api/warehouses/:id/products
+**Назначение:** Получение списка товаров в конкретном складе  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `id` - ID склада
+**Ответ:**
+```json
+{
+  "warehouse": {
+    "id": 1,
+    "name": "Main Warehouse"
+  },
+  "products": [
+    {
+      "id": 1,
+      "product_id": 1,
+      "product_name": "Название товара",
+      "manufacturer": "Производитель",
+      "boxes_qty": 10,
+      "pieces_qty": 20,
+      "weight_kg": 50.5,
+      "volume_cbm": 2.5,
+      "updated_at": "2023-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+### GET /api/warehouses/:warehouseId/products/:productId
+**Назначение:** Получение детальной информации о конкретном товаре в конкретном складе  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `warehouseId` - ID склада
+- `productId` - ID товара
+**Ответ:**
+```json
+{
+  "warehouse": {
+    "id": 1,
+    "name": "Main Warehouse"
+  },
+  "product": {
+    "id": 1,
+    "name": "Название товара",
+    "manufacturer": "Производитель",
+    "created_at": "2023-01-01T00:00:00.000Z"
+  },
+  "stock": {
+    "id": 1,
+    "boxes_qty": 10,
+    "pieces_qty": 20,
+    "weight_kg": 50.5,
+    "volume_cbm": 2.5,
+    "updated_at": "2023-01-01T00:00:00.000Z"
+  }
+}
+```
+
 ## 3. Управление товарами
 
 ### POST /api/products

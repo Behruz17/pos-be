@@ -330,6 +330,76 @@ app.get('/api/warehouses', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/warehouses/:id/products
+app.get('/api/warehouses/:id/products', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Verify warehouse exists
+    const [warehouse] = await db.execute('SELECT id, name FROM warehouses WHERE id = ?', [id]);
+    if (warehouse.length === 0) {
+      return res.status(404).json({ error: 'Warehouse not found' });
+    }
+    
+    // Get products in the specified warehouse
+    const [rows] = await db.execute(
+      `SELECT ws.id, ws.product_id, p.name as product_name, p.manufacturer, 
+              ws.boxes_qty, ws.pieces_qty, ws.weight_kg, ws.volume_cbm, ws.updated_at
+       FROM warehouse_stock ws
+       JOIN products p ON ws.product_id = p.id
+       WHERE ws.warehouse_id = ?
+       ORDER BY p.name`
+    );
+    
+    res.json({
+      warehouse: warehouse[0],
+      products: rows
+    });
+  } catch (error) {
+    console.error('Get warehouse products error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/warehouses/:warehouseId/products/:productId
+app.get('/api/warehouses/:warehouseId/products/:productId', authMiddleware, async (req, res) => {
+  try {
+    const { warehouseId, productId } = req.params;
+    
+    // Verify warehouse exists
+    const [warehouse] = await db.execute('SELECT id, name FROM warehouses WHERE id = ?', [warehouseId]);
+    if (warehouse.length === 0) {
+      return res.status(404).json({ error: 'Warehouse not found' });
+    }
+    
+    // Verify product exists
+    const [product] = await db.execute('SELECT id, name, manufacturer, created_at FROM products WHERE id = ?', [productId]);
+    if (product.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+    
+    // Get product stock in the specified warehouse
+    const [stock] = await db.execute(
+      `SELECT ws.id, ws.boxes_qty, ws.pieces_qty, ws.weight_kg, ws.volume_cbm, ws.updated_at
+       FROM warehouse_stock ws
+       WHERE ws.warehouse_id = ? AND ws.product_id = ?`
+    );
+    
+    if (stock.length === 0) {
+      return res.status(404).json({ error: 'Product not found in this warehouse' });
+    }
+    
+    res.json({
+      warehouse: warehouse[0],
+      product: product[0],
+      stock: stock[0]
+    });
+  } catch (error) {
+    console.error('Get warehouse product detail error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // POST /api/inventory/receipt
 app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
   try {
