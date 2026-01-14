@@ -1321,6 +1321,41 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
         return res.status(500).json({ error: 'Demo customer not found' });
       }
     }
+    
+    // If sale_id is provided, validate that return quantities don't exceed purchased quantities
+    if (sale_id) {
+      // Get the original sale items
+      const [saleItems] = await db.execute(
+        'SELECT product_id, quantity FROM sale_items WHERE sale_id = ?',
+        [sale_id]
+      );
+      
+      if (saleItems.length === 0) {
+        return res.status(400).json({ error: 'Sale not found or has no items' });
+      }
+      
+      // Create a map of purchased quantities by product_id
+      const purchasedQuantities = {};
+      for (const saleItem of saleItems) {
+        if (purchasedQuantities[saleItem.product_id]) {
+          purchasedQuantities[saleItem.product_id] += saleItem.quantity;
+        } else {
+          purchasedQuantities[saleItem.product_id] = saleItem.quantity;
+        }
+      }
+      
+      // Check each return item against purchased quantities
+      for (const returnItem of items) {
+        const purchasedQty = purchasedQuantities[returnItem.product_id] || 0;
+        const returnQty = parseInt(returnItem.quantity);
+        
+        if (returnQty > purchasedQty) {
+          return res.status(400).json({ 
+            error: `Cannot return more than purchased. Product ID ${returnItem.product_id}: purchased ${purchasedQty}, trying to return ${returnQty}` 
+          });
+        }
+      }
+    }
 
     // Start transaction
     const connection = await db.getConnection();
