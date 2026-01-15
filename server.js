@@ -287,7 +287,25 @@ app.post('/api/products', authMiddleware, async (req, res) => {
 // GET /api/products
 app.get('/api/products', authMiddleware, async (req, res) => {
   try {
-    const [rows] = await db.execute('SELECT id, name, manufacturer, image, created_at FROM products ORDER BY created_at DESC');
+    // Get products with their last unit prices from sales and total stock across all warehouses
+    const [rows] = await db.execute(
+      `SELECT p.id, p.name, p.manufacturer, p.image, p.created_at, `
+      + `COALESCE(last_sale.last_unit_price, 0) as last_unit_price, `
+      + `COALESCE(total_stock.total_quantity, 0) as total_stock `
+      + `FROM products p `
+      + `LEFT JOIN (`
+      +   `SELECT si.product_id, si.unit_price as last_unit_price, `
+      +   `ROW_NUMBER() OVER (PARTITION BY si.product_id ORDER BY s.created_at DESC) as rn `
+      +   `FROM sale_items si `
+      +   `JOIN sales s ON si.sale_id = s.id `
+      + `) last_sale ON p.id = last_sale.product_id AND last_sale.rn = 1 `
+      + `LEFT JOIN (`
+      +   `SELECT product_id, SUM(pieces_qty) as total_quantity `
+      +   `FROM warehouse_stock `
+      +   `GROUP BY product_id `
+      + `) total_stock ON p.id = total_stock.product_id `
+      + `ORDER BY p.created_at DESC`
+    );
     res.json(rows);
   } catch (error) {
     console.error('Get products error:', error);
