@@ -366,6 +366,7 @@
       "pieces_qty": 10,
       "weight_kg": 25.5,
       "volume_cbm": 1.2,
+      "amount": 5000.00,
       "purchase_cost": 400.00,
       "selling_price": 600.00
     }
@@ -426,7 +427,7 @@
       "pieces_qty": 10,
       "weight_kg": 25.5,
       "volume_cbm": 1.2,
-      "amount": 500.00,
+      "amount": 5000.00,
       "purchase_cost": 400.00,
       "selling_price": 600.00
     }

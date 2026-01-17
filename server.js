@@ -548,8 +548,8 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
 
     // Validate each item
     for (const item of items) {
-      if (!item.product_id || !item.boxes_qty || !item.pieces_qty || !item.purchase_cost) {
-        return res.status(400).json({ error: 'Each item must have product_id, boxes_qty, pieces_qty, and purchase_cost' });
+      if (!item.product_id || !item.boxes_qty || !item.pieces_qty || !item.amount) {
+        return res.status(400).json({ error: 'Each item must have product_id, boxes_qty, pieces_qty, and amount' });
       }
     }
 
@@ -558,8 +558,8 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
     await connection.beginTransaction();
 
     try {
-      // Calculate total purchase cost
-      const total_amount = items.reduce((sum, item) => sum + (parseFloat(item.purchase_cost || 0) * (parseInt(item.boxes_qty || 0) + parseInt(item.pieces_qty || 0))), 0);
+      // Calculate total amount from item amounts
+      const total_amount = items.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
 
       // Create stock receipt
       const [receiptResult] = await connection.execute(
@@ -580,7 +580,7 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
             item.pieces_qty,
             item.weight_kg || null,
             item.volume_cbm || null,
-            item.purchase_cost,  // amount field will still store purchase cost for now
+            item.amount,
             item.purchase_cost,
             item.selling_price || null
           ]
