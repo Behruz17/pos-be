@@ -287,11 +287,13 @@ app.post('/api/products', authMiddleware, async (req, res) => {
 // GET /api/products
 app.get('/api/products', authMiddleware, async (req, res) => {
   try {
-    // Get products with their last unit prices from sales and total stock across all warehouses
+    // Get products with their last unit prices from sales, total stock, and purchase/selling prices
     const [rows] = await db.execute(
       `SELECT p.id, p.name, p.manufacturer, p.image, p.created_at, `
       + `COALESCE(last_sale.last_unit_price, 0) as last_unit_price, `
-      + `COALESCE(total_stock.total_quantity, 0) as total_stock `
+      + `COALESCE(total_stock.total_quantity, 0) as total_stock, `
+      + `COALESCE(prices.purchase_cost, 0) as purchase_cost, `
+      + `COALESCE(prices.selling_price, 0) as selling_price `
       + `FROM products p `
       + `LEFT JOIN (`
       +   `SELECT si.product_id, si.unit_price as last_unit_price, `
@@ -304,6 +306,14 @@ app.get('/api/products', authMiddleware, async (req, res) => {
       +   `FROM warehouse_stock `
       +   `GROUP BY product_id `
       + `) total_stock ON p.id = total_stock.product_id `
+      + `LEFT JOIN (`
+      +   `SELECT sri.product_id, sri.purchase_cost, sri.selling_price `
+      +   `FROM stock_receipt_items sri `
+      +   `JOIN stock_receipts sr ON sri.receipt_id = sr.id `
+      +   `WHERE sri.product_id IN (SELECT id FROM products) `
+      +   `ORDER BY sr.created_at DESC `
+      +   `LIMIT 1 `
+      + `) prices ON p.id = prices.product_id `
       + `ORDER BY p.created_at DESC`
     );
     res.json(rows);
