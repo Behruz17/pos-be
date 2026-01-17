@@ -125,12 +125,45 @@ const setupDatabase = async () => {
         weight_kg DECIMAL(10, 2),
         volume_cbm DECIMAL(10, 2),
         amount DECIMAL(10, 2) NOT NULL,
+        purchase_cost DECIMAL(10, 2),
+        selling_price DECIMAL(10, 2),
         FOREIGN KEY (receipt_id) REFERENCES stock_receipts(id) ON DELETE CASCADE,
         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
       )
     `);
     
     console.log('Stock receipt items table created/verified');
+    
+    // Add purchase_cost and selling_price columns if they don't exist
+    try {
+      await db.execute(`
+        ALTER TABLE stock_receipt_items 
+        ADD COLUMN purchase_cost DECIMAL(10, 2)
+      `);
+      console.log('Purchase_cost column added to stock_receipt_items table');
+    } catch (error) {
+      // If column already exists, we'll get an error, which is OK
+      if (error.code === 'ER_DUP_FIELDNAME') {
+        console.log('Purchase_cost column already exists in stock_receipt_items table');
+      } else {
+        console.log('Purchase_cost column already exists or other error:', error.message);
+      }
+    }
+    
+    try {
+      await db.execute(`
+        ALTER TABLE stock_receipt_items 
+        ADD COLUMN selling_price DECIMAL(10, 2)
+      `);
+      console.log('Selling_price column added to stock_receipt_items table');
+    } catch (error) {
+      // If column already exists, we'll get an error, which is OK
+      if (error.code === 'ER_DUP_FIELDNAME') {
+        console.log('Selling_price column already exists in stock_receipt_items table');
+      } else {
+        console.log('Selling_price column already exists or other error:', error.message);
+      }
+    }
     
     // Create warehouse stock table
     await db.execute(`

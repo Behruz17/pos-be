@@ -464,6 +464,25 @@ app.get('/api/warehouses/:id/products', authMiddleware, async (req, res) => {
       [id]
     );
     
+    // Add purchase and selling prices for each item
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      
+      // Get the most recent purchase and selling prices for this product from stock receipts
+      const [priceRows] = await db.execute(
+        `SELECT sri.purchase_cost, sri.selling_price 
+        FROM stock_receipt_items sri 
+        JOIN stock_receipts sr ON sri.receipt_id = sr.id 
+        WHERE sri.product_id = ? 
+        ORDER BY sr.created_at DESC 
+        LIMIT 1`,
+        [row.product_id]
+      );
+      
+      row.purchase_cost = priceRows.length > 0 ? priceRows[0].purchase_cost : 0;
+      row.selling_price = priceRows.length > 0 ? priceRows[0].selling_price : 0;
+    }
+    
     res.json({
       warehouse: warehouse[0],
       products: rows
@@ -529,8 +548,8 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
 
     // Validate each item
     for (const item of items) {
-      if (!item.product_id || !item.boxes_qty || !item.pieces_qty || !item.amount) {
-        return res.status(400).json({ error: 'Each item must have product_id, boxes_qty, pieces_qty, and amount' });
+      if (!item.product_id || !item.boxes_qty || !item.pieces_qty || !item.purchase_cost) {
+        return res.status(400).json({ error: 'Each item must have product_id, boxes_qty, pieces_qty, and purchase_cost' });
       }
     }
 
@@ -539,8 +558,8 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
     await connection.beginTransaction();
 
     try {
-      // Calculate total amount
-      const total_amount = items.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
+      // Calculate total purchase cost
+      const total_amount = items.reduce((sum, item) => sum + (parseFloat(item.purchase_cost || 0) * (parseInt(item.boxes_qty || 0) + parseInt(item.pieces_qty || 0))), 0);
 
       // Create stock receipt
       const [receiptResult] = await connection.execute(
@@ -553,7 +572,7 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
       for (const item of items) {
         // Insert receipt item
         await connection.execute(
-          'INSERT INTO stock_receipt_items (receipt_id, product_id, boxes_qty, pieces_qty, weight_kg, volume_cbm, amount) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO stock_receipt_items (receipt_id, product_id, boxes_qty, pieces_qty, weight_kg, volume_cbm, amount, purchase_cost, selling_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
           [
             receiptId,
             item.product_id,
@@ -561,7 +580,9 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
             item.pieces_qty,
             item.weight_kg || null,
             item.volume_cbm || null,
-            item.amount
+            item.purchase_cost,  // amount field will still store purchase cost for now
+            item.purchase_cost,
+            item.selling_price || null
           ]
         );
 
@@ -652,7 +673,7 @@ app.get('/api/inventory/receipt/:id', authMiddleware, async (req, res) => {
     // Get receipt items
     const [itemRows] = await db.execute(
       'SELECT sri.id, sri.product_id, p.name as product_name, p.manufacturer, p.image, sri.boxes_qty, sri.pieces_qty, '
-      + 'sri.weight_kg, sri.volume_cbm, sri.amount '
+      + 'sri.weight_kg, sri.volume_cbm, sri.amount, sri.purchase_cost, sri.selling_price '
       + 'FROM stock_receipt_items sri '
       + 'JOIN products p ON sri.product_id = p.id '
       + 'WHERE sri.receipt_id = ?',
@@ -672,6 +693,7 @@ app.get('/api/inventory/receipt/:id', authMiddleware, async (req, res) => {
 // GET /api/warehouse/stock
 app.get('/api/warehouse/stock', authMiddleware, async (req, res) => {
   try {
+    // Get warehouse stock with purchase and selling prices
     const [rows] = await db.execute(
       `SELECT ws.id, ws.warehouse_id, w.name as warehouse_name, ws.product_id, p.name as product_name,
               ws.boxes_qty, ws.pieces_qty, ws.weight_kg, ws.volume_cbm, ws.updated_at
@@ -680,6 +702,25 @@ app.get('/api/warehouse/stock', authMiddleware, async (req, res) => {
        JOIN products p ON ws.product_id = p.id
        ORDER BY w.name, p.name`
     );
+    
+    // Add purchase and selling prices for each item
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      
+      // Get the most recent purchase and selling prices for this product from stock receipts
+      const [priceRows] = await db.execute(
+        `SELECT sri.purchase_cost, sri.selling_price 
+        FROM stock_receipt_items sri 
+        JOIN stock_receipts sr ON sri.receipt_id = sr.id 
+        WHERE sri.product_id = ? 
+        ORDER BY sr.created_at DESC 
+        LIMIT 1`,
+        [row.product_id]
+      );
+      
+      row.purchase_cost = priceRows.length > 0 ? priceRows[0].purchase_cost : 0;
+      row.selling_price = priceRows.length > 0 ? priceRows[0].selling_price : 0;
+    }
 
     res.json(rows);
   } catch (error) {

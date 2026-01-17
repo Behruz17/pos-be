@@ -232,7 +232,9 @@
       "pieces_qty": 20,
       "weight_kg": 50.5,
       "volume_cbm": 2.5,
-      "updated_at": "2023-01-01T00:00:00.000Z"
+      "updated_at": "2023-01-01T00:00:00.000Z",
+      "purchase_cost": 400.00,
+      "selling_price": 600.00
     }
   ]
 }
@@ -338,7 +340,11 @@
     "name": "Название товара",
     "manufacturer": "Производитель",
     "image": "Ссылка на изображение товара",
-    "created_at": "2023-01-01T00:00:00.000Z"
+    "created_at": "2023-01-01T00:00:00.000Z",
+    "last_unit_price": 600.00,
+    "total_stock": 30,
+    "purchase_cost": 400.00,
+    "selling_price": 600.00
   }
 ]
 ```
@@ -360,7 +366,8 @@
       "pieces_qty": 10,
       "weight_kg": 25.5,
       "volume_cbm": 1.2,
-      "amount": 500.00
+      "purchase_cost": 400.00,
+      "selling_price": 600.00
     }
   ]
 }
@@ -419,7 +426,9 @@
       "pieces_qty": 10,
       "weight_kg": 25.5,
       "volume_cbm": 1.2,
-      "amount": 500.00
+      "amount": 500.00,
+      "purchase_cost": 400.00,
+      "selling_price": 600.00
     }
   ]
 }
@@ -444,7 +453,9 @@
     "pieces_qty": 20,
     "weight_kg": 50.5,
     "volume_cbm": 2.5,
-    "updated_at": "2023-01-01T00:00:00.000Z"
+    "updated_at": "2023-01-01T00:00:00.000Z",
+    "purchase_cost": 400.00,
+    "selling_price": 600.00
   }
 ]
 ```
