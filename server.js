@@ -1217,53 +1217,67 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
           [saleId, item.product_id, item.quantity, item.unit_price, totalPrice]
         );
 
-        // Update warehouse stock
+        // Update warehouse stock - sum all stock records for this product
         const [stockRows] = await connection.execute(
           'SELECT id, boxes_qty, pieces_qty FROM warehouse_stock WHERE product_id = ?',
           [item.product_id]
         );
 
         if (stockRows.length > 0) {
-          const currentStock = stockRows[0];
-          // For simplicity, we're reducing from pieces_qty first
-          let remainingQuantity = parseInt(item.quantity);
-          let newPiecesQty = currentStock.pieces_qty;
-          let newBoxesQty = currentStock.boxes_qty;
-
-          // Reduce from pieces first
-          if (newPiecesQty >= remainingQuantity) {
-            newPiecesQty -= remainingQuantity;
-            remainingQuantity = 0;
-          } else {
-            remainingQuantity -= newPiecesQty;
-            newPiecesQty = 0;
-            
-            // Then reduce from boxes
-            if (newBoxesQty > 0) {
-              // Convert boxes to pieces equivalent if needed
-              // In this simplified version, we assume 1 box = 1 piece for calculation
-              if (newBoxesQty >= remainingQuantity) {
-                newBoxesQty -= remainingQuantity;
-                remainingQuantity = 0;
-              } else {
-                newBoxesQty = 0;
-                remainingQuantity -= newBoxesQty;
-              }
-            }
+          // Calculate total available stock across all warehouse records
+          let totalBoxes = 0;
+          let totalPieces = 0;
+          
+          for (const stockRow of stockRows) {
+            totalBoxes += stockRow.boxes_qty;
+            totalPieces += stockRow.pieces_qty;
           }
-
-          if (remainingQuantity > 0) {
+          
+          // Check if we have enough total stock
+          const requestedQuantity = parseInt(item.quantity);
+          
+          // Convert total stock to pieces equivalent for comparison
+          // Assuming 1 box = 1 piece for this calculation
+          const totalAvailablePieces = totalBoxes + totalPieces;
+          
+          if (requestedQuantity > totalAvailablePieces) {
             // Not enough stock
             await connection.rollback();
             connection.release();
-            return res.status(400).json({ error: `Not enough stock for product ID: ${item.product_id}` });
+            return res.status(400).json({ error: `Not enough stock for product ID: ${item.product_id}. Requested: ${requestedQuantity}, Available: ${totalAvailablePieces}` });
           }
-
-          // Update stock
-          await connection.execute(
-            'UPDATE warehouse_stock SET boxes_qty = ?, pieces_qty = ? WHERE id = ?',
-            [newBoxesQty, newPiecesQty, currentStock.id]
-          );
+          
+          // Now distribute the quantity reduction across warehouse records
+          let remainingQuantity = requestedQuantity;
+          
+          for (const stockRow of stockRows) {
+            if (remainingQuantity <= 0) break;
+            
+            // First, try to reduce from boxes
+            let boxesToReduce = Math.min(stockRow.boxes_qty, remainingQuantity);
+            remainingQuantity -= boxesToReduce;
+            
+            // Then, if still need to reduce more, try to reduce from pieces
+            let piecesToReduce = 0;
+            if (remainingQuantity > 0) {
+              piecesToReduce = Math.min(stockRow.pieces_qty, remainingQuantity);
+              remainingQuantity -= piecesToReduce;
+            }
+            
+            // Update this specific warehouse stock record
+            const newBoxesQty = stockRow.boxes_qty - boxesToReduce;
+            const newPiecesQty = stockRow.pieces_qty - piecesToReduce;
+            
+            await connection.execute(
+              'UPDATE warehouse_stock SET boxes_qty = ?, pieces_qty = ? WHERE id = ?',
+              [newBoxesQty, newPiecesQty, stockRow.id]
+            );
+          }
+        } else {
+          // No stock found for this product
+          await connection.rollback();
+          connection.release();
+          return res.status(400).json({ error: `Not enough stock for product ID: ${item.product_id}` });
         }
       }
 
