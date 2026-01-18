@@ -12,6 +12,26 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// Function to get the default warehouse ID
+const getDefaultWarehouseId = async (conn) => {
+  const [rows] = await conn.execute(
+    'SELECT id FROM warehouses WHERE is_default = 1 ORDER BY id LIMIT 1'
+  );
+  if (rows.length > 0) return rows[0].id;
+
+  const [firstWarehouse] = await conn.execute(
+    'SELECT id FROM warehouses ORDER BY id LIMIT 1'
+  );
+  if (firstWarehouse.length > 0) {
+    await conn.execute('UPDATE warehouses SET is_default = 1 WHERE id = ?', [firstWarehouse[0].id]);
+    return firstWarehouse[0].id;
+  }
+
+  const [ins] = await conn.execute('INSERT INTO warehouses (name) VALUES (?)', ['Main Warehouse']);
+  await conn.execute('UPDATE warehouses SET is_default = 1 WHERE id = ?', [ins.insertId]);
+  return ins.insertId;
+};
+
 // Helper function to generate a random token
 const generateToken = () => {
   return crypto.randomBytes(32).toString('hex');
@@ -302,18 +322,16 @@ app.get('/api/products', authMiddleware, async (req, res) => {
       +   `JOIN sales s ON si.sale_id = s.id `
       + `) last_sale ON p.id = last_sale.product_id AND last_sale.rn = 1 `
       + `LEFT JOIN (`
-      +   `SELECT product_id, SUM(pieces_qty) as total_quantity `
+      +   `SELECT product_id, SUM(total_pieces) as total_quantity `
       +   `FROM warehouse_stock `
       +   `GROUP BY product_id `
       + `) total_stock ON p.id = total_stock.product_id `
       + `LEFT JOIN (`
-      +   `SELECT sri.product_id, sri.purchase_cost, sri.selling_price `
+      +   `SELECT sri.product_id, sri.purchase_cost, sri.selling_price, `
+      +   `ROW_NUMBER() OVER (PARTITION BY sri.product_id ORDER BY sr.created_at DESC) as rn `
       +   `FROM stock_receipt_items sri `
       +   `JOIN stock_receipts sr ON sri.receipt_id = sr.id `
-      +   `WHERE sri.product_id IN (SELECT id FROM products) `
-      +   `ORDER BY sr.created_at DESC `
-      +   `LIMIT 1 `
-      + `) prices ON p.id = prices.product_id `
+      + `) prices ON p.id = prices.product_id AND prices.rn = 1 `
       + `ORDER BY p.created_at DESC`
     );
     res.json(rows);
@@ -466,7 +484,7 @@ app.get('/api/warehouses/:id/products', authMiddleware, async (req, res) => {
     // Get products in the specified warehouse
     const [rows] = await db.execute(
       'SELECT ws.id, ws.product_id, p.name as product_name, p.manufacturer, p.image, '
-      + 'ws.boxes_qty, ws.pieces_qty, ws.weight_kg, ws.volume_cbm, ws.updated_at '
+      + 'ws.total_pieces, ws.weight_kg, ws.volume_cbm, ws.updated_at '
       + 'FROM warehouse_stock ws '
       + 'JOIN products p ON ws.product_id = p.id '
       + 'WHERE ws.warehouse_id = ? '
@@ -525,7 +543,7 @@ app.get('/api/warehouses/:warehouseId/products/:productId', authMiddleware, asyn
     
     // Get product stock in the specified warehouse
     const [stock] = await db.execute(
-      'SELECT ws.id, ws.boxes_qty, ws.pieces_qty, ws.weight_kg, ws.volume_cbm, ws.updated_at '
+      'SELECT ws.id, ws.total_pieces, ws.weight_kg, ws.volume_cbm, ws.updated_at '
       + 'FROM warehouse_stock ws '
       + 'WHERE ws.warehouse_id = ? AND ws.product_id = ?',
       [warehouseId, productId]
@@ -558,8 +576,8 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
 
     // Validate each item
     for (const item of items) {
-      if (!item.product_id || !item.boxes_qty || !item.pieces_qty || !item.amount) {
-        return res.status(400).json({ error: 'Each item must have product_id, boxes_qty, pieces_qty, and amount' });
+      if (item.product_id == null || item.boxes_qty == null || item.pieces_per_box == null || item.loose_pieces == null || item.amount == null) {
+        return res.status(400).json({ error: 'Each item must have product_id, boxes_qty, pieces_per_box, loose_pieces, amount' });
       }
     }
 
@@ -580,44 +598,49 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
 
       // Process each item in the receipt
       for (const item of items) {
+        // Calculate total pieces
+        const total_pieces = (item.boxes_qty * item.pieces_per_box) + item.loose_pieces;
+        
         // Insert receipt item
         await connection.execute(
-          'INSERT INTO stock_receipt_items (receipt_id, product_id, boxes_qty, pieces_qty, weight_kg, volume_cbm, amount, purchase_cost, selling_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO stock_receipt_items (receipt_id, product_id, boxes_qty, weight_kg, volume_cbm, amount, purchase_cost, selling_price, pieces_per_box, loose_pieces, total_pieces) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           [
             receiptId,
             item.product_id,
             item.boxes_qty,
-            item.pieces_qty,
             item.weight_kg || null,
             item.volume_cbm || null,
             item.amount,
             item.purchase_cost,
-            item.selling_price || null
+            item.selling_price || null,
+            item.pieces_per_box,
+            item.loose_pieces,
+            total_pieces
           ]
         );
 
         // Update warehouse stock
         const [existingStock] = await connection.execute(
-          'SELECT id, boxes_qty, pieces_qty, weight_kg, volume_cbm FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
+          'SELECT id, total_pieces, weight_kg, volume_cbm FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
           [warehouse_id, item.product_id]
         );
 
         if (existingStock.length > 0) {
           // Update existing stock
-          const updatedBoxes = existingStock[0].boxes_qty + item.boxes_qty;
-          const updatedPieces = existingStock[0].pieces_qty + item.pieces_qty;
+          const updatedTotalPieces = existingStock[0].total_pieces + ((item.boxes_qty * item.pieces_per_box) + item.loose_pieces);
           const updatedWeight = existingStock[0].weight_kg ? (parseFloat(existingStock[0].weight_kg) + parseFloat(item.weight_kg || 0)) : (item.weight_kg || 0);
           const updatedVolume = existingStock[0].volume_cbm ? (parseFloat(existingStock[0].volume_cbm) + parseFloat(item.volume_cbm || 0)) : (item.volume_cbm || 0);
 
           await connection.execute(
-            'UPDATE warehouse_stock SET boxes_qty = ?, pieces_qty = ?, weight_kg = ?, volume_cbm = ?, updated_at = NOW() WHERE id = ?',
-            [updatedBoxes, updatedPieces, updatedWeight, updatedVolume, existingStock[0].id]
+            'UPDATE warehouse_stock SET total_pieces = ?, weight_kg = ?, volume_cbm = ?, updated_at = NOW() WHERE id = ?',
+            [updatedTotalPieces, updatedWeight, updatedVolume, existingStock[0].id]
           );
         } else {
           // Insert new stock record
+          const totalPieces = (item.boxes_qty * item.pieces_per_box) + item.loose_pieces;
           await connection.execute(
-            'INSERT INTO warehouse_stock (warehouse_id, product_id, boxes_qty, pieces_qty, weight_kg, volume_cbm) VALUES (?, ?, ?, ?, ?, ?)',
-            [warehouse_id, item.product_id, item.boxes_qty, item.pieces_qty, item.weight_kg || 0, item.volume_cbm || 0]
+            'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces, weight_kg, volume_cbm) VALUES (?, ?, ?, ?, ?)',
+            [warehouse_id, item.product_id, totalPieces, item.weight_kg || 0, item.volume_cbm || 0]
           );
         }
       }
@@ -682,7 +705,7 @@ app.get('/api/inventory/receipt/:id', authMiddleware, async (req, res) => {
 
     // Get receipt items
     const [itemRows] = await db.execute(
-      'SELECT sri.id, sri.product_id, p.name as product_name, p.manufacturer, p.image, sri.boxes_qty, sri.pieces_qty, '
+      'SELECT sri.id, sri.product_id, p.name as product_name, p.manufacturer, p.image, sri.boxes_qty, sri.pieces_per_box, sri.loose_pieces, sri.total_pieces, '
       + 'sri.weight_kg, sri.volume_cbm, sri.amount, sri.purchase_cost, sri.selling_price '
       + 'FROM stock_receipt_items sri '
       + 'JOIN products p ON sri.product_id = p.id '
@@ -706,7 +729,7 @@ app.get('/api/warehouse/stock', authMiddleware, async (req, res) => {
     // Get warehouse stock with purchase and selling prices
     const [rows] = await db.execute(
       `SELECT ws.id, ws.warehouse_id, w.name as warehouse_name, ws.product_id, p.name as product_name,
-              ws.boxes_qty, ws.pieces_qty, ws.weight_kg, ws.volume_cbm, ws.updated_at
+              ws.total_pieces, ws.weight_kg, ws.volume_cbm, ws.updated_at
        FROM warehouse_stock ws
        JOIN warehouses w ON ws.warehouse_id = w.id
        JOIN products p ON ws.product_id = p.id
@@ -743,11 +766,11 @@ app.get('/api/warehouse/stock', authMiddleware, async (req, res) => {
 app.put('/api/warehouse/stock/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { boxes_qty, pieces_qty, weight_kg, volume_cbm, reason } = req.body;
+    const { total_pieces, weight_kg, volume_cbm, reason } = req.body;
 
     // Get current stock
     const [currentStock] = await db.execute(
-      'SELECT warehouse_id, product_id, boxes_qty as current_boxes, pieces_qty as current_pieces, weight_kg as current_weight, volume_cbm as current_volume FROM warehouse_stock WHERE id = ?',
+      'SELECT warehouse_id, product_id, total_pieces as current_total_pieces, weight_kg as current_weight, volume_cbm as current_volume FROM warehouse_stock WHERE id = ?',
       [id]
     );
 
@@ -759,20 +782,19 @@ app.put('/api/warehouse/stock/:id', authMiddleware, async (req, res) => {
 
     // Update stock
     const [result] = await db.execute(
-      'UPDATE warehouse_stock SET boxes_qty = ?, pieces_qty = ?, weight_kg = ?, volume_cbm = ?, updated_at = NOW() WHERE id = ?',
-      [boxes_qty, pieces_qty, weight_kg, volume_cbm, id]
+      'UPDATE warehouse_stock SET total_pieces = ?, weight_kg = ?, volume_cbm = ?, updated_at = NOW() WHERE id = ?',
+      [total_pieces, weight_kg, volume_cbm, id]
     );
 
     // Record the change in history
     await db.execute(
       `INSERT INTO stock_changes 
-       (warehouse_id, product_id, user_id, change_type, old_boxes_qty, new_boxes_qty, 
-        old_pieces_qty, new_pieces_qty, old_weight_kg, new_weight_kg, old_volume_cbm, new_volume_cbm, reason)
-       VALUES (?, ?, ?, 'ADJUSTMENT', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (warehouse_id, product_id, user_id, change_type, old_total_pieces, new_total_pieces,
+        old_weight_kg, new_weight_kg, old_volume_cbm, new_volume_cbm, reason)
+       VALUES (?, ?, ?, 'ADJUSTMENT', ?, ?, ?, ?, ?, ?, ?)`,
       [
         stock.warehouse_id, stock.product_id, req.user.id,
-        stock.current_boxes, boxes_qty,
-        stock.current_pieces, pieces_qty,
+        stock.current_total_pieces, total_pieces,
         stock.current_weight, weight_kg,
         stock.current_volume, volume_cbm,
         reason || null
@@ -792,9 +814,10 @@ app.put('/api/warehouse/stock/:id', authMiddleware, async (req, res) => {
 // POST /api/warehouse/stock/move
 app.post('/api/warehouse/stock/move', authMiddleware, async (req, res) => {
   try {
-    const { from_warehouse_id, to_warehouse_id, product_id, boxes_qty, pieces_qty, weight_kg, volume_cbm, reason } = req.body;
+    const { from_warehouse_id, to_warehouse_id, product_id, total_pieces, weight_kg, volume_cbm, reason } = req.body;
 
-    if (!from_warehouse_id || !to_warehouse_id || !product_id || boxes_qty < 0 || pieces_qty < 0) {
+    const qty = parseInt(total_pieces, 10);
+    if (!from_warehouse_id || !to_warehouse_id || !product_id || !Number.isFinite(qty) || qty <= 0) {
       return res.status(400).json({ error: 'Required fields are missing or invalid' });
     }
 
@@ -805,7 +828,7 @@ app.post('/api/warehouse/stock/move', authMiddleware, async (req, res) => {
     try {
       // Get current stock in source warehouse
       const [fromStock] = await connection.execute(
-        'SELECT id, boxes_qty as current_boxes, pieces_qty as current_pieces, weight_kg as current_weight, volume_cbm as current_volume FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
+        'SELECT id, total_pieces as current_total_pieces, weight_kg as current_weight, volume_cbm as current_volume FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
         [from_warehouse_id, product_id]
       );
 
@@ -818,33 +841,47 @@ app.post('/api/warehouse/stock/move', authMiddleware, async (req, res) => {
       const stock = fromStock[0];
 
       // Check if we have enough stock
-      if (stock.current_boxes < boxes_qty || stock.current_pieces < pieces_qty) {
+      if (stock.current_total_pieces < qty) {
         await connection.rollback();
         connection.release();
         return res.status(400).json({ error: 'Not enough stock in source warehouse' });
       }
+      
+      // Check if we have enough weight and volume to subtract
+      const subtractWeight = parseFloat(weight_kg || 0);
+      const subtractVolume = parseFloat(volume_cbm || 0);
+      
+      if (stock.current_weight != null && subtractWeight > parseFloat(stock.current_weight || 0)) {
+        await connection.rollback();
+        connection.release();
+        return res.status(400).json({ error: 'Not enough weight in source warehouse' });
+      }
+      
+      if (stock.current_volume != null && subtractVolume > parseFloat(stock.current_volume || 0)) {
+        await connection.rollback();
+        connection.release();
+        return res.status(400).json({ error: 'Not enough volume in source warehouse' });
+      }
 
       // Update source warehouse (subtract stock)
-      const newFromBoxes = stock.current_boxes - boxes_qty;
-      const newFromPieces = stock.current_pieces - pieces_qty;
-      const newFromWeight = stock.current_weight ? parseFloat(stock.current_weight) - parseFloat(weight_kg || 0) : 0;
-      const newFromVolume = stock.current_volume ? parseFloat(stock.current_volume) - parseFloat(volume_cbm || 0) : 0;
+      const newFromTotalPieces = stock.current_total_pieces - qty;
+      const newFromWeight = Math.max(0, parseFloat(stock.current_weight || 0) - parseFloat(weight_kg || 0));
+      const newFromVolume = Math.max(0, parseFloat(stock.current_volume || 0) - parseFloat(volume_cbm || 0));
 
       await connection.execute(
-        'UPDATE warehouse_stock SET boxes_qty = ?, pieces_qty = ?, weight_kg = ?, volume_cbm = ?, updated_at = NOW() WHERE id = ?',
-        [newFromBoxes, newFromPieces, newFromWeight, newFromVolume, stock.id]
+        'UPDATE warehouse_stock SET total_pieces = ?, weight_kg = ?, volume_cbm = ?, updated_at = NOW() WHERE id = ?',
+        [newFromTotalPieces, newFromWeight, newFromVolume, stock.id]
       );
 
       // Record the OUT change
       await connection.execute(
         `INSERT INTO stock_changes 
-         (warehouse_id, product_id, user_id, change_type, old_boxes_qty, new_boxes_qty, 
-          old_pieces_qty, new_pieces_qty, old_weight_kg, new_weight_kg, old_volume_cbm, new_volume_cbm, reason)
-         VALUES (?, ?, ?, 'OUT', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (warehouse_id, product_id, user_id, change_type, old_total_pieces, new_total_pieces,
+          old_weight_kg, new_weight_kg, old_volume_cbm, new_volume_cbm, reason)
+         VALUES (?, ?, ?, 'OUT', ?, ?, ?, ?, ?, ?, ?)`,
         [
           from_warehouse_id, product_id, req.user.id,
-          stock.current_boxes, newFromBoxes,
-          stock.current_pieces, newFromPieces,
+          stock.current_total_pieces, newFromTotalPieces,
           stock.current_weight, newFromWeight,
           stock.current_volume, newFromVolume,
           reason || `Transfer to warehouse ${to_warehouse_id}`
@@ -853,38 +890,52 @@ app.post('/api/warehouse/stock/move', authMiddleware, async (req, res) => {
 
       // Update destination warehouse (add stock)
       const [toStock] = await connection.execute(
-        'SELECT id, boxes_qty as current_boxes, pieces_qty as current_pieces, weight_kg as current_weight, volume_cbm as current_volume FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
+        'SELECT id, total_pieces as current_total_pieces, weight_kg as current_weight, volume_cbm as current_volume FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
         [to_warehouse_id, product_id]
       );
 
       if (toStock.length > 0) {
         // Update existing stock in destination
-        const newToBoxes = toStock[0].current_boxes + boxes_qty;
-        const newToPieces = toStock[0].current_pieces + pieces_qty;
-        const newToWeight = toStock[0].current_weight ? parseFloat(toStock[0].current_weight) + parseFloat(weight_kg || 0) : parseFloat(weight_kg || 0);
-        const newToVolume = toStock[0].current_volume ? parseFloat(toStock[0].current_volume) + parseFloat(volume_cbm || 0) : parseFloat(volume_cbm || 0);
+        const newToTotalPieces = toStock[0].current_total_pieces + qty;
+        const newToWeight = parseFloat(toStock[0].current_weight || 0) + parseFloat(weight_kg || 0);
+        const newToVolume = parseFloat(toStock[0].current_volume || 0) + parseFloat(volume_cbm || 0);
 
         await connection.execute(
-          'UPDATE warehouse_stock SET boxes_qty = ?, pieces_qty = ?, weight_kg = ?, volume_cbm = ?, updated_at = NOW() WHERE id = ?',
-          [newToBoxes, newToPieces, newToWeight, newToVolume, toStock[0].id]
+          'UPDATE warehouse_stock SET total_pieces = ?, weight_kg = ?, volume_cbm = ?, updated_at = NOW() WHERE id = ?',
+          [newToTotalPieces, newToWeight, newToVolume, toStock[0].id]
         );
       } else {
         // Create new stock record in destination
         await connection.execute(
-          'INSERT INTO warehouse_stock (warehouse_id, product_id, boxes_qty, pieces_qty, weight_kg, volume_cbm) VALUES (?, ?, ?, ?, ?, ?)',
-          [to_warehouse_id, product_id, boxes_qty, pieces_qty, weight_kg || 0, volume_cbm || 0]
+          'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces, weight_kg, volume_cbm) VALUES (?, ?, ?, ?, ?)',
+          [to_warehouse_id, product_id, qty, weight_kg || 0, volume_cbm || 0]
         );
       }
 
-      // Record the IN change
+      // Record the IN change (correct old/new values)
+      const toOldPieces = toStock.length > 0 ? toStock[0].current_total_pieces : 0;
+      const toOldWeight = toStock.length > 0 ? (parseFloat(toStock[0].current_weight) || 0) : 0;
+      const toOldVolume = toStock.length > 0 ? (parseFloat(toStock[0].current_volume) || 0) : 0;
+      
+      const addWeight = parseFloat(weight_kg || 0);
+      const addVolume = parseFloat(volume_cbm || 0);
+      
+      const toNewPieces = toOldPieces + qty;
+      const toNewWeight = toOldWeight + addWeight;
+      const toNewVolume = toOldVolume + addVolume;
+      
       await connection.execute(
         `INSERT INTO stock_changes 
-         (warehouse_id, product_id, user_id, change_type, old_boxes_qty, new_boxes_qty, 
-          old_pieces_qty, new_pieces_qty, old_weight_kg, new_weight_kg, old_volume_cbm, new_volume_cbm, reason)
-         VALUES (?, ?, ?, 'IN', 0, ?, 0, ?, 0, ?, 0, ?, ?)`,
+         (warehouse_id, product_id, user_id, change_type,
+          old_total_pieces, new_total_pieces,
+          old_weight_kg, new_weight_kg,
+          old_volume_cbm, new_volume_cbm, reason)
+         VALUES (?, ?, ?, 'IN', ?, ?, ?, ?, ?, ?, ?)`,
         [
           to_warehouse_id, product_id, req.user.id,
-          boxes_qty, pieces_qty, weight_kg || 0, volume_cbm || 0,
+          toOldPieces, toNewPieces,
+          toOldWeight, toNewWeight,
+          toOldVolume, toNewVolume,
           reason || `Transfer from warehouse ${from_warehouse_id}`
         ]
       );
@@ -913,7 +964,7 @@ app.get('/api/stock/history', authMiddleware, async (req, res) => {
     const [rows] = await db.execute(
       'SELECT sc.id, sc.warehouse_id, w.name as warehouse_name, sc.product_id, p.name as product_name, '
       + 'p.manufacturer, p.image, sc.user_id, u.login as user_name, sc.change_type, '
-      + 'sc.old_boxes_qty, sc.new_boxes_qty, sc.old_pieces_qty, sc.new_pieces_qty, '
+      + 'sc.old_total_pieces, sc.new_total_pieces, '
       + 'sc.old_weight_kg, sc.new_weight_kg, sc.old_volume_cbm, sc.new_volume_cbm, '
       + 'sc.reason, sc.created_at '
       + 'FROM stock_changes sc '
@@ -938,7 +989,7 @@ app.get('/api/stock/history/:id', authMiddleware, async (req, res) => {
     const [rows] = await db.execute(
       'SELECT sc.id, sc.warehouse_id, w.name as warehouse_name, sc.product_id, p.name as product_name, '
       + 'p.manufacturer, p.image, sc.user_id, u.login as user_name, sc.change_type, '
-      + 'sc.old_boxes_qty, sc.new_boxes_qty, sc.old_pieces_qty, sc.new_pieces_qty, '
+      + 'sc.old_total_pieces, sc.new_total_pieces, '
       + 'sc.old_weight_kg, sc.new_weight_kg, sc.old_volume_cbm, sc.new_volume_cbm, '
       + 'sc.reason, sc.created_at '
       + 'FROM stock_changes sc '
@@ -1229,26 +1280,20 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
 
         // Update warehouse stock - sum all stock records for this product
         const [stockRows] = await connection.execute(
-          'SELECT id, boxes_qty, pieces_qty FROM warehouse_stock WHERE product_id = ?',
+          'SELECT id, total_pieces FROM warehouse_stock WHERE product_id = ?',
           [item.product_id]
         );
 
         if (stockRows.length > 0) {
           // Calculate total available stock across all warehouse records
-          let totalBoxes = 0;
-          let totalPieces = 0;
+          let totalAvailablePieces = 0;
           
           for (const stockRow of stockRows) {
-            totalBoxes += stockRow.boxes_qty;
-            totalPieces += stockRow.pieces_qty;
+            totalAvailablePieces += stockRow.total_pieces;
           }
           
           // Check if we have enough total stock
           const requestedQuantity = parseInt(item.quantity);
-          
-          // Convert total stock to pieces equivalent for comparison
-          // Assuming 1 box = 1 piece for this calculation
-          const totalAvailablePieces = totalBoxes + totalPieces;
           
           if (requestedQuantity > totalAvailablePieces) {
             // Not enough stock
@@ -1263,25 +1308,16 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
           for (const stockRow of stockRows) {
             if (remainingQuantity <= 0) break;
             
-            // First, try to reduce from boxes
-            let boxesToReduce = Math.min(stockRow.boxes_qty, remainingQuantity);
-            remainingQuantity -= boxesToReduce;
-            
-            // Then, if still need to reduce more, try to reduce from pieces
-            let piecesToReduce = 0;
-            if (remainingQuantity > 0) {
-              piecesToReduce = Math.min(stockRow.pieces_qty, remainingQuantity);
-              remainingQuantity -= piecesToReduce;
-            }
-            
-            // Update this specific warehouse stock record
-            const newBoxesQty = stockRow.boxes_qty - boxesToReduce;
-            const newPiecesQty = stockRow.pieces_qty - piecesToReduce;
+            // Take from this stock record (up to available amount)
+            const piecesToTake = Math.min(stockRow.total_pieces, remainingQuantity);
+            const newTotalPieces = stockRow.total_pieces - piecesToTake;
             
             await connection.execute(
-              'UPDATE warehouse_stock SET boxes_qty = ?, pieces_qty = ? WHERE id = ?',
-              [newBoxesQty, newPiecesQty, stockRow.id]
+              'UPDATE warehouse_stock SET total_pieces = ? WHERE id = ?',
+              [newTotalPieces, stockRow.id]
             );
+            
+            remainingQuantity -= piecesToTake;
           }
         } else {
           // No stock found for this product
@@ -1455,6 +1491,15 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
       );
       const returnId = returnResult.insertId;
 
+      // 1) Find default warehouse (shop) - do this once before the loop
+      const defaultWarehouseId = await getDefaultWarehouseId(connection);
+      
+      if (!defaultWarehouseId) {
+        await connection.rollback();
+        connection.release();
+        return res.status(500).json({ error: 'Default warehouse (shop) is not configured' });
+      }
+      
       // Process each item in the return
       for (const item of items) {
         const totalPrice = parseFloat(item.unit_price) * parseInt(item.quantity);
@@ -1464,27 +1509,58 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
           'INSERT INTO return_items (return_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)',
           [returnId, item.product_id, item.quantity, item.unit_price, totalPrice]
         );
-
-        // Update warehouse stock (add back the returned items)
+        
+        // Update warehouse stock (add back the returned items) ALWAYS to default warehouse
         const [stockRows] = await connection.execute(
-          'SELECT id, boxes_qty, pieces_qty FROM warehouse_stock WHERE product_id = ?',
-          [item.product_id]
+          'SELECT id, total_pieces FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
+          [defaultWarehouseId, item.product_id]
         );
-
+        
+        const addQty = parseInt(item.quantity, 10);
+        
         if (stockRows.length > 0) {
-          // Update existing stock
           const currentStock = stockRows[0];
-          const newPiecesQty = currentStock.pieces_qty + parseInt(item.quantity);
+          const oldTotalPieces = currentStock.total_pieces;
+          const newTotalPieces = oldTotalPieces + addQty;
           
           await connection.execute(
-            'UPDATE warehouse_stock SET pieces_qty = ? WHERE id = ?',
-            [newPiecesQty, currentStock.id]
+            'UPDATE warehouse_stock SET total_pieces = ?, updated_at = NOW() WHERE id = ?',
+            [newTotalPieces, currentStock.id]
+          );
+          
+          // Record the IN change for return
+          await connection.execute(
+            `INSERT INTO stock_changes 
+             (warehouse_id, product_id, user_id, change_type,
+              old_total_pieces, new_total_pieces,
+              old_weight_kg, new_weight_kg,
+              old_volume_cbm, new_volume_cbm, reason)
+             VALUES (?, ?, ?, 'IN', ?, ?, 0, 0, 0, 0, ?)`,
+            [
+              defaultWarehouseId, item.product_id, req.user.id,
+              oldTotalPieces, newTotalPieces,
+              `Return #${returnId}`
+            ]
           );
         } else {
-          // Create new stock record if none exists
           await connection.execute(
-            'INSERT INTO warehouse_stock (warehouse_id, product_id, boxes_qty, pieces_qty) VALUES (?, ?, 0, ?)',
-            [1, item.product_id, parseInt(item.quantity)] // Using default warehouse ID 1
+            'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces, weight_kg, volume_cbm) VALUES (?, ?, ?, 0, 0)',
+            [defaultWarehouseId, item.product_id, addQty]
+          );
+          
+          // Record the IN change for return (new item)
+          await connection.execute(
+            `INSERT INTO stock_changes 
+             (warehouse_id, product_id, user_id, change_type,
+              old_total_pieces, new_total_pieces,
+              old_weight_kg, new_weight_kg,
+              old_volume_cbm, new_volume_cbm, reason)
+             VALUES (?, ?, ?, 'IN', ?, ?, 0, 0, 0, 0, ?)`,
+            [
+              defaultWarehouseId, item.product_id, req.user.id,
+              0, addQty,
+              `Return #${returnId}`
+            ]
           );
         }
       }
@@ -1579,26 +1655,7 @@ const startServer = async () => {
     // Test database connection
     await db.execute('SELECT 1');
     console.log('Database connected successfully');
-    
-    // Create tables if they don't exist
-    await db.execute(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        login VARCHAR(50) UNIQUE NOT NULL,
-        password_hash VARCHAR(255) NOT NULL
-      )
-    `);
-    
-    await db.execute(`
-      CREATE TABLE IF NOT EXISTS tokens (
-        user_id INT PRIMARY KEY,
-        token VARCHAR(64) UNIQUE NOT NULL,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
-    
-    console.log('Tables created/verified successfully');
-    
+        
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });

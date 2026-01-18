@@ -69,11 +69,12 @@
   "login": "user",
   "name": "Имя пользователя",
   "role": "USER",
+  "created_at": "2023-01-01T00:00:00.000Z",
   "message": "User created successfully"
 }
 ```
 
-## 10. Управление пользователями (только для администраторов)
+## 2. Управление пользователями (только для администраторов)
 
 ### GET /api/users
 **Назначение:** Получение списка всех пользователей  
@@ -148,7 +149,7 @@
 }
 ```
 
-## 2. Управление складами
+## 3. Управление складами
 
 ### POST /api/warehouses
 **Назначение:** Создание нового склада  
@@ -228,8 +229,7 @@
       "product_name": "Название товара",
       "manufacturer": "Производитель",
       "image": "Ссылка на изображение товара",
-      "boxes_qty": 10,
-      "pieces_qty": 20,
+      "total_pieces": 30,
       "weight_kg": 50.5,
       "volume_cbm": 2.5,
       "updated_at": "2023-01-01T00:00:00.000Z",
@@ -263,8 +263,7 @@
   },
   "stock": {
     "id": 1,
-    "boxes_qty": 10,
-    "pieces_qty": 20,
+    "total_pieces": 30,
     "weight_kg": 50.5,
     "volume_cbm": 2.5,
     "updated_at": "2023-01-01T00:00:00.000Z"
@@ -272,38 +271,7 @@
 }
 ```
 
-### DELETE /api/products/:id
-**Назначение:** Удаление товара  
-**Заголовки:**
-- `Authorization: Bearer <токен>`
-**Параметры:**
-- `id` - ID товара
-**Ответ (успешный):**
-```json
-{
-  "message": "Product deleted successfully"
-}
-```
-**Ответ (товар не найден):**
-```json
-{
-  "error": "Product not found"
-}
-```
-**Ответ (товар находится на складе):**
-```json
-{
-  "error": "Cannot delete product that is currently in stock. Please remove from all warehouses first."
-}
-```
-**Ответ (товар использован в операциях):**
-```json
-{
-  "error": "Cannot delete product that has been used in inventory receipts/sales/returns."
-}
-```
-
-## 3. Управление товарами
+## 4. Управление товарами
 
 ### POST /api/products
 **Назначение:** Создание нового товара  
@@ -349,7 +317,38 @@
 ]
 ```
 
-## 4. Приход товаров на склад
+### DELETE /api/products/:id
+**Назначение:** Удаление товара  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `id` - ID товара
+**Ответ (успешный):**
+```json
+{
+  "message": "Product deleted successfully"
+}
+```
+**Ответ (товар не найден):**
+```json
+{
+  "error": "Product not found"
+}
+```
+**Ответ (товар находится на складе):**
+```json
+{
+  "error": "Cannot delete product that is currently in stock. Please remove from all warehouses first."
+}
+```
+**Ответ (товар использован в операциях):**
+```json
+{
+  "error": "Cannot delete product that has been used in inventory receipts."
+}
+```
+
+## 5. Приход товаров на склад
 
 ### POST /api/inventory/receipt
 **Назначение:** Создание документа прихода товаров на склад  
@@ -363,7 +362,8 @@
     {
       "product_id": 1,
       "boxes_qty": 5,
-      "pieces_qty": 10,
+      "pieces_per_box": 10,
+      "loose_pieces": 5,
       "weight_kg": 25.5,
       "volume_cbm": 1.2,
       "amount": 5000.00,
@@ -395,7 +395,7 @@
     "created_by": 1,
     "created_by_name": "admin",
     "created_at": "2023-01-01T00:00:00.000Z",
-    "total_amount": 500.00
+    "total_amount": 5000.00
   }
 ]
 ```
@@ -415,7 +415,7 @@
   "created_by": 1,
   "created_by_name": "admin",
   "created_at": "2023-01-01T00:00:00.000Z",
-  "total_amount": 500.00,
+  "total_amount": 5000.00,
   "items": [
     {
       "id": 1,
@@ -424,7 +424,9 @@
       "manufacturer": "Производитель",
       "image": "Ссылка на изображение товара",
       "boxes_qty": 5,
-      "pieces_qty": 10,
+      "pieces_per_box": 10,
+      "loose_pieces": 5,
+      "total_pieces": 55,
       "weight_kg": 25.5,
       "volume_cbm": 1.2,
       "amount": 5000.00,
@@ -435,7 +437,7 @@
 }
 ```
 
-## 5. Управление остатками на складах
+## 6. Управление остатками на складах
 
 ### GET /api/warehouse/stock
 **Назначение:** Получение остатков товаров на всех складах  
@@ -450,8 +452,7 @@
     "warehouse_name": "Main Warehouse",
     "product_id": 1,
     "product_name": "Название товара",
-    "boxes_qty": 10,
-    "pieces_qty": 20,
+    "total_pieces": 30,
     "weight_kg": 50.5,
     "volume_cbm": 2.5,
     "updated_at": "2023-01-01T00:00:00.000Z",
@@ -470,8 +471,7 @@
 **Тело запроса:**
 ```json
 {
-  "boxes_qty": 15,
-  "pieces_qty": 25,
+  "total_pieces": 35,
   "weight_kg": 60.0,
   "volume_cbm": 3.0,
   "reason": "Корректировка по инвентаризации"
@@ -495,8 +495,7 @@
   "from_warehouse_id": 1,
   "to_warehouse_id": 2,
   "product_id": 1,
-  "boxes_qty": 5,
-  "pieces_qty": 10,
+  "total_pieces": 15,
   "weight_kg": 25.0,
   "volume_cbm": 1.2,
   "reason": "Перемещение между складами"
@@ -509,7 +508,7 @@
 }
 ```
 
-## 6. История изменений остатков
+## 7. История изменений остатков
 
 ### GET /api/stock/history
 **Назначение:** Получение истории всех изменений остатков  
@@ -529,10 +528,8 @@
     "user_id": 1,
     "user_name": "admin",
     "change_type": "ADJUSTMENT",
-    "old_boxes_qty": 10,
-    "new_boxes_qty": 15,
-    "old_pieces_qty": 20,
-    "new_pieces_qty": 25,
+    "old_total_pieces": 20,
+    "new_total_pieces": 25,
     "old_weight_kg": 50.5,
     "new_weight_kg": 60.0,
     "old_volume_cbm": 2.5,
@@ -562,20 +559,18 @@
   "user_id": 1,
   "user_name": "admin",
   "change_type": "ADJUSTMENT",
-  "old_boxes_qty": 10,
-  "new_boxes_qty": 15,
-  "old_pieces_qty": 20,
-  "new_pieces_qty": 25,
+  "old_total_pieces": 20,
+  "new_total_pieces": 25,
   "old_weight_kg": 50.5,
   "new_weight_kg": 60.0,
   "old_volume_cbm": 2.5,
   "new_volume_cbm": 3.0,
   "reason": "Корректировка по инвентаризации",
   "created_at": "2023-01-01T00:00:00.000Z"
-},
+}
 ```
 
-## 7. Управление клиентами
+## 8. Управление клиентами
 
 ### POST /api/customers
 **Назначение:** Создание нового клиента  
@@ -596,7 +591,9 @@
   "full_name": "Ф.И.О. клиента",
   "phone": "+79991234567",
   "city": "Город",
-  "balance": 0,
+  "balance": 0.00,
+  "created_at": "2023-01-01T00:00:00.000Z",
+  "updated_at": "2023-01-01T00:00:00.000Z",
   "message": "Customer created successfully"
 }
 ```
@@ -613,7 +610,7 @@
     "full_name": "Ф.И.О. клиента",
     "phone": "+79991234567",
     "city": "Город",
-    "balance": 1000.00,
+    "balance": -123320.00,
     "created_at": "2023-01-01T00:00:00.000Z",
     "updated_at": "2023-01-01T00:00:00.000Z"
   }
@@ -633,7 +630,7 @@
   "full_name": "Ф.И.О. клиента",
   "phone": "+79991234567",
   "city": "Город",
-  "balance": 1000.00,
+  "balance": -123320.00,
   "created_at": "2023-01-01T00:00:00.000Z",
   "updated_at": "2023-01-01T00:00:00.000Z"
 }
@@ -660,7 +657,7 @@
   "full_name": "Ф.И.О. клиента",
   "phone": "+79991234567",
   "city": "Город",
-  "balance": 1000.00,
+  "balance": -123320.00,
   "created_at": "2023-01-01T00:00:00.000Z",
   "updated_at": "2023-01-02T00:00:00.000Z",
   "message": "Customer updated successfully"
@@ -693,7 +690,7 @@
   "full_name": "Ф.И.О. клиента",
   "phone": "+79991234567",
   "city": "Город",
-  "balance": 1000.00,
+  "balance": -123320.00,
   "created_at": "2023-01-01T00:00:00.000Z",
   "updated_at": "2023-01-02T00:00:00.000Z",
   "transactions": [
@@ -701,7 +698,13 @@
       "id": 1,
       "amount": 500.00,
       "date": "2023-01-02T10:00:00.000Z",
-      "type": "sale" (или "return")
+      "type": "sale"
+    },
+    {
+      "id": 2,
+      "amount": 200.00,
+      "date": "2023-01-03T10:00:00.000Z",
+      "type": "return"
     }
   ]
 }
@@ -725,12 +728,12 @@
 ```json
 {
   "id": 1,
-  "new_balance": 1500.00,
+  "new_balance": -122820.00,
   "message": "Customer balance updated successfully"
 }
 ```
 
-## 8. Продажи
+## 9. Продажи
 
 ### POST /api/sales
 **Назначение:** Создание новой продажи  
@@ -807,7 +810,7 @@
 }
 ```
 
-## 9. Возвраты
+## 10. Возвраты
 
 ### POST /api/returns
 **Назначение:** Создание нового возврата  
