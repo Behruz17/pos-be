@@ -4,7 +4,40 @@ const crypto = require('crypto');
 const db = require('./db');
 const authMiddleware = require('./middleware');
 const cors = require('cors');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
+
+// Настройка multer для загрузки файлов
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = 'uploads';
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({ 
+  storage: storage,
+  fileFilter: (req, file, cb) => {
+    // Разрешаем только изображения
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Только изображения разрешены!'));
+    }
+  },
+  limits: {
+    fileSize: 5 * 1024 * 1024 // ограничение 5MB
+  }
+});
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -278,9 +311,18 @@ app.delete('/api/users/:id', authMiddleware, async (req, res) => {
 // Inventory Management Routes
 
 // POST /api/products
-app.post('/api/products', authMiddleware, async (req, res) => {
+app.post('/api/products', upload.single('image'), authMiddleware, async (req, res) => {
   try {
-    const { name, manufacturer, image } = req.body;
+    const { name, manufacturer } = req.body;
+    // Обрабатываем изображение - может быть как URL, так и загруженный файл
+    let image = null;
+    if (req.file) {
+      // Если файл загружен, используем путь к файлу
+      image = `/uploads/${req.file.filename}`;
+    } else if (req.body.image) {
+      // Если передан URL в body, используем его
+      image = req.body.image;
+    }
 
     if (!name) {
       return res.status(400).json({ error: 'Product name is required' });
@@ -288,7 +330,7 @@ app.post('/api/products', authMiddleware, async (req, res) => {
 
     const [result] = await db.execute(
       'INSERT INTO products (name, manufacturer, image) VALUES (?, ?, ?)',
-      [name, manufacturer || null, image || null]
+      [name, manufacturer || null, image]
     );
 
     res.status(201).json({
@@ -337,6 +379,51 @@ app.get('/api/products', authMiddleware, async (req, res) => {
     res.json(rows);
   } catch (error) {
     console.error('Get products error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PUT /api/products/:id
+app.put('/api/products/:id', upload.single('image'), authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, manufacturer } = req.body;
+    
+    // Обрабатываем изображение - может быть как URL, так и загруженный файл
+    let image = null;
+    if (req.file) {
+      // Если файл загружен, используем путь к файлу
+      image = `/uploads/${req.file.filename}`;
+    } else if (typeof req.body.image !== 'undefined' && req.body.image !== 'null' && req.body.image !== '') {
+      // Если передан URL в body, используем его
+      image = req.body.image;
+    }
+    
+    // Получаем текущее изображение, если не передано новое
+    if (image === null) {
+      const [currentProduct] = await db.execute('SELECT image FROM products WHERE id = ?', [id]);
+      if (currentProduct.length > 0) {
+        image = currentProduct[0].image;
+      }
+    }
+
+    const [result] = await db.execute(
+      'UPDATE products SET name = ?, manufacturer = ?, image = ? WHERE id = ?',
+      [name, manufacturer || null, image, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    const [updatedProduct] = await db.execute('SELECT id, name, manufacturer, image, created_at FROM products WHERE id = ?', [id]);
+    
+    res.json({
+      ...updatedProduct[0],
+      message: 'Product updated successfully'
+    });
+  } catch (error) {
+    console.error('Update product error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
