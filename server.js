@@ -841,13 +841,35 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
 
         if (existingStock.length > 0) {
           // Update existing stock
-          const updatedTotalPieces = existingStock[0].total_pieces + ((item.boxes_qty * item.pieces_per_box) + item.loose_pieces);
-          const updatedWeight = existingStock[0].weight_kg ? (parseFloat(existingStock[0].weight_kg) + parseFloat(item.weight_kg || 0)) : (item.weight_kg || 0);
-          const updatedVolume = existingStock[0].volume_cbm ? (parseFloat(existingStock[0].volume_cbm) + parseFloat(item.volume_cbm || 0)) : (item.volume_cbm || 0);
+          const oldTotalPieces = existingStock[0].total_pieces;
+          const oldWeight = existingStock[0].weight_kg;
+          const oldVolume = existingStock[0].volume_cbm;
+          
+          const addedTotalPieces = (item.boxes_qty * item.pieces_per_box) + item.loose_pieces;
+          const updatedTotalPieces = oldTotalPieces + addedTotalPieces;
+          const updatedWeight = oldWeight ? (parseFloat(oldWeight) + parseFloat(item.weight_kg || 0)) : (item.weight_kg || 0);
+          const updatedVolume = oldVolume ? (parseFloat(oldVolume) + parseFloat(item.volume_cbm || 0)) : (item.volume_cbm || 0);
 
           await connection.execute(
             'UPDATE warehouse_stock SET total_pieces = ?, weight_kg = ?, volume_cbm = ?, updated_at = NOW() WHERE id = ?',
             [updatedTotalPieces, updatedWeight, updatedVolume, existingStock[0].id]
+          );
+          
+          // Record the IN change for stock history
+          await connection.execute(
+            `INSERT INTO stock_changes 
+             (warehouse_id, product_id, user_id, change_type,
+              old_total_pieces, new_total_pieces,
+              old_weight_kg, new_weight_kg,
+              old_volume_cbm, new_volume_cbm, reason)
+             VALUES (?, ?, ?, 'IN', ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              warehouse_id, item.product_id, req.user.id,
+              oldTotalPieces, updatedTotalPieces,
+              oldWeight, updatedWeight,
+              oldVolume, updatedVolume,
+              `Receipt #${receiptId}`
+            ]
           );
         } else {
           // Insert new stock record
@@ -855,6 +877,23 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
           await connection.execute(
             'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces, weight_kg, volume_cbm) VALUES (?, ?, ?, ?, ?)',
             [warehouse_id, item.product_id, totalPieces, item.weight_kg || 0, item.volume_cbm || 0]
+          );
+          
+          // Record the IN change for stock history (new item)
+          await connection.execute(
+            `INSERT INTO stock_changes 
+             (warehouse_id, product_id, user_id, change_type,
+              old_total_pieces, new_total_pieces,
+              old_weight_kg, new_weight_kg,
+              old_volume_cbm, new_volume_cbm, reason)
+             VALUES (?, ?, ?, 'IN', ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              warehouse_id, item.product_id, req.user.id,
+              0, totalPieces,
+              0, item.weight_kg || 0,
+              0, item.volume_cbm || 0,
+              `Receipt #${receiptId}`
+            ]
           );
         }
       }
@@ -1575,9 +1614,11 @@ app.get('/api/sales', authMiddleware, async (req, res) => {
   try {
     const [rows] = await db.execute(
       `SELECT s.id, s.customer_id, c.full_name as customer_name, s.total_amount, s.created_by, 
-              u.login as created_by_name, s.created_at
+              u.login as created_by_name, s.created_at, s.store_id, s.warehouse_id, st.name as store_name, w.name as warehouse_name
        FROM sales s
        LEFT JOIN customers c ON s.customer_id = c.id
+       LEFT JOIN stores st ON s.store_id = st.id
+       LEFT JOIN warehouses w ON s.warehouse_id = w.id
        JOIN users u ON s.created_by = u.id
        ORDER BY s.created_at DESC`
     );
@@ -1597,9 +1638,11 @@ app.get('/api/sales/:id', authMiddleware, async (req, res) => {
     // Get sale header
     const [saleRows] = await db.execute(
       `SELECT s.id, s.customer_id, c.full_name as customer_name, s.total_amount, s.created_by, 
-              u.login as created_by_name, s.created_at
+              u.login as created_by_name, s.created_at, s.store_id, s.warehouse_id, st.name as store_name, w.name as warehouse_name
        FROM sales s
        LEFT JOIN customers c ON s.customer_id = c.id
+       LEFT JOIN stores st ON s.store_id = st.id
+       LEFT JOIN warehouses w ON s.warehouse_id = w.id
        JOIN users u ON s.created_by = u.id
        WHERE s.id = ?`,
       [id]
@@ -1732,8 +1775,8 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
 
       // Create return
       const [returnResult] = await connection.execute(
-        'INSERT INTO returns (customer_id, total_amount, created_by, sale_id) VALUES (?, ?, ?, ?)',
-        [customerId, total_amount, req.user.id, sale_id || null]
+        'INSERT INTO returns (customer_id, total_amount, created_by, sale_id, warehouse_id, store_id) VALUES (?, ?, ?, ?, ?, ?)',
+        [customerId, total_amount, req.user.id, sale_id || null, returnWarehouseId, store_id || null]
       );
       const returnId = returnResult.insertId;
       
@@ -1832,7 +1875,7 @@ app.get('/api/returns', authMiddleware, async (req, res) => {
   try {
     const [rows] = await db.execute(
       `SELECT r.id, r.customer_id, c.full_name as customer_name, r.total_amount, r.created_by, 
-              u.login as created_by_name, r.created_at, r.sale_id
+              u.login as created_by_name, r.created_at, r.sale_id, r.warehouse_id, r.store_id
        FROM returns r
        LEFT JOIN customers c ON r.customer_id = c.id
        JOIN users u ON r.created_by = u.id
@@ -1854,7 +1897,7 @@ app.get('/api/returns/:id', authMiddleware, async (req, res) => {
     // Get return header
     const [returnRows] = await db.execute(
       `SELECT r.id, r.customer_id, c.full_name as customer_name, r.total_amount, r.created_by, 
-              u.login as created_by_name, r.created_at, r.sale_id
+              u.login as created_by_name, r.created_at, r.sale_id, r.warehouse_id, r.store_id
        FROM returns r
        LEFT JOIN customers c ON r.customer_id = c.id
        JOIN users u ON r.created_by = u.id
