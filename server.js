@@ -557,6 +557,133 @@ app.delete('/api/warehouses/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// Store Management Routes
+
+// POST /api/stores
+app.post('/api/stores', authMiddleware, async (req, res) => {
+  try {
+    const { name, city, warehouse_id } = req.body;
+
+    // Validate required fields
+    if (!name || !warehouse_id) {
+      return res.status(400).json({ error: 'Store name and warehouse_id are required' });
+    }
+
+    // Check if warehouse exists
+    const [warehouse] = await db.execute('SELECT id FROM warehouses WHERE id = ?', [warehouse_id]);
+    if (warehouse.length === 0) {
+      return res.status(400).json({ error: 'Warehouse not found' });
+    }
+
+    const [result] = await db.execute(
+      'INSERT INTO stores (name, city, warehouse_id) VALUES (?, ?, ?)',
+      [name, city || null, warehouse_id]
+    );
+
+    res.status(201).json({
+      id: result.insertId,
+      name,
+      city,
+      warehouse_id,
+      message: 'Store added successfully'
+    });
+  } catch (error) {
+    console.error('Add store error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/stores
+app.get('/api/stores', authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      'SELECT s.id, s.name, s.city, s.warehouse_id, w.name AS warehouse_name ' +
+      'FROM stores s ' +
+      'JOIN warehouses w ON w.id = s.warehouse_id ' +
+      'WHERE s.is_active = 1 ' +
+      'ORDER BY s.id'
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error('Get stores error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PUT /api/stores/:id
+app.put('/api/stores/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, city, warehouse_id } = req.body;
+
+    // Validate required fields
+    if (!name || !warehouse_id) {
+      return res.status(400).json({ error: 'Store name and warehouse_id are required' });
+    }
+
+    // Check if store exists
+    const [existingStore] = await db.execute('SELECT id FROM stores WHERE id = ?', [id]);
+    if (existingStore.length === 0) {
+      return res.status(404).json({ error: 'Store not found' });
+    }
+
+    // Check if warehouse exists
+    const [warehouse] = await db.execute('SELECT id FROM warehouses WHERE id = ?', [warehouse_id]);
+    if (warehouse.length === 0) {
+      return res.status(400).json({ error: 'Warehouse not found' });
+    }
+
+    const [result] = await db.execute(
+      'UPDATE stores SET name = ?, city = ?, warehouse_id = ? WHERE id = ?',
+      [name, city || null, warehouse_id, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Store not found' });
+    }
+
+    const [updatedStore] = await db.execute(
+      'SELECT s.id, s.name, s.city, s.warehouse_id, w.name AS warehouse_name ' +
+      'FROM stores s ' +
+      'JOIN warehouses w ON w.id = s.warehouse_id ' +
+      'WHERE s.id = ?',
+      [id]
+    );
+    
+    res.json({
+      ...updatedStore[0],
+      message: 'Store updated successfully'
+    });
+  } catch (error) {
+    console.error('Update store error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// DELETE /api/stores/:id
+app.delete('/api/stores/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if store exists
+    const [existingStore] = await db.execute('SELECT id FROM stores WHERE id = ?', [id]);
+    
+    if (existingStore.length === 0) {
+      return res.status(404).json({ error: 'Store not found' });
+    }
+    
+    // Soft delete by setting is_active to 0
+    await db.execute('UPDATE stores SET is_active = 0 WHERE id = ?', [id]);
+    
+    res.json({
+      message: 'Store deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete store error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // GET /api/warehouses/:id/products
 app.get('/api/warehouses/:id/products', authMiddleware, async (req, res) => {
   try {
@@ -1315,9 +1442,13 @@ app.post('/api/customers/:id/update-balance', authMiddleware, async (req, res) =
 // POST /api/sales
 app.post('/api/sales', authMiddleware, async (req, res) => {
   try {
-    const { customer_id, items } = req.body;
+    const { customer_id, store_id, items } = req.body;
 
     // Validate required fields
+    if (!store_id) {
+      return res.status(400).json({ error: 'Store ID is required' });
+    }
+    
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Items array is required' });
     }
@@ -1328,6 +1459,18 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
         return res.status(400).json({ error: 'Each item must have product_id, quantity, and unit_price' });
       }
     }
+
+    // Check if store exists and get its warehouse
+    const [store] = await db.execute(
+      'SELECT id, warehouse_id FROM stores WHERE id = ? AND is_active = 1',
+      [store_id]
+    );
+    
+    if (store.length === 0) {
+      return res.status(400).json({ error: 'Store not found or inactive' });
+    }
+    
+    const storeWarehouseId = store[0].warehouse_id;
 
     // Get demo customer if no customer is provided
     let customerId = customer_id;
@@ -1348,10 +1491,10 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
       // Calculate total amount
       const total_amount = items.reduce((sum, item) => sum + (parseFloat(item.unit_price) * parseInt(item.quantity)), 0);
 
-      // Create sale
+      // Create sale with store_id and warehouse_id
       const [saleResult] = await connection.execute(
-        'INSERT INTO sales (customer_id, total_amount, created_by) VALUES (?, ?, ?)',
-        [customerId, total_amount, req.user.id]
+        'INSERT INTO sales (customer_id, store_id, warehouse_id, total_amount, created_by) VALUES (?, ?, ?, ?, ?)',
+        [customerId, store_id, storeWarehouseId, total_amount, req.user.id]
       );
       const saleId = saleResult.insertId;
 
@@ -1365,52 +1508,40 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
           [saleId, item.product_id, item.quantity, item.unit_price, totalPrice]
         );
 
-        // Update warehouse stock - sum all stock records for this product
+        // Update warehouse stock - only from the specific store's warehouse
         const [stockRows] = await connection.execute(
-          'SELECT id, total_pieces FROM warehouse_stock WHERE product_id = ?',
-          [item.product_id]
+          'SELECT id, total_pieces FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ? FOR UPDATE',
+          [storeWarehouseId, item.product_id]
         );
 
         if (stockRows.length > 0) {
-          // Calculate total available stock across all warehouse records
-          let totalAvailablePieces = 0;
-          
-          for (const stockRow of stockRows) {
-            totalAvailablePieces += stockRow.total_pieces;
-          }
-          
-          // Check if we have enough total stock
+          const stockRow = stockRows[0];
           const requestedQuantity = parseInt(item.quantity);
           
-          if (requestedQuantity > totalAvailablePieces) {
+          // Check if we have enough stock in this specific warehouse
+          if (requestedQuantity > stockRow.total_pieces) {
             // Not enough stock
             await connection.rollback();
             connection.release();
-            return res.status(400).json({ error: `Not enough stock for product ID: ${item.product_id}. Requested: ${requestedQuantity}, Available: ${totalAvailablePieces}` });
+            return res.status(400).json({ 
+              error: `Not enough stock for product ID: ${item.product_id} in store warehouse. Requested: ${requestedQuantity}, Available: ${stockRow.total_pieces}` 
+            });
           }
           
-          // Now distribute the quantity reduction across warehouse records
-          let remainingQuantity = requestedQuantity;
+          // Deduct from this warehouse only
+          const newTotalPieces = stockRow.total_pieces - requestedQuantity;
           
-          for (const stockRow of stockRows) {
-            if (remainingQuantity <= 0) break;
-            
-            // Take from this stock record (up to available amount)
-            const piecesToTake = Math.min(stockRow.total_pieces, remainingQuantity);
-            const newTotalPieces = stockRow.total_pieces - piecesToTake;
-            
-            await connection.execute(
-              'UPDATE warehouse_stock SET total_pieces = ? WHERE id = ?',
-              [newTotalPieces, stockRow.id]
-            );
-            
-            remainingQuantity -= piecesToTake;
-          }
+          await connection.execute(
+            'UPDATE warehouse_stock SET total_pieces = ? WHERE id = ?',
+            [newTotalPieces, stockRow.id]
+          );
         } else {
-          // No stock found for this product
+          // No stock found for this product in this warehouse
           await connection.rollback();
           connection.release();
-          return res.status(400).json({ error: `Not enough stock for product ID: ${item.product_id}` });
+          return res.status(400).json({ 
+            error: `Not enough stock for product ID: ${item.product_id} in store warehouse` 
+          });
         }
       }
 
@@ -1503,7 +1634,7 @@ app.get('/api/sales/:id', authMiddleware, async (req, res) => {
 // POST /api/returns
 app.post('/api/returns', authMiddleware, async (req, res) => {
   try {
-    const { customer_id, sale_id, items } = req.body;
+    const { customer_id, sale_id, store_id, items } = req.body;
 
     // Validate required fields
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -1529,7 +1660,21 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
     }
     
     // If sale_id is provided, validate that return quantities don't exceed purchased quantities
+    let returnWarehouseId = null;
+    
     if (sale_id) {
+      // Get the original sale items and warehouse
+      const [saleInfo] = await db.execute(
+        'SELECT warehouse_id FROM sales WHERE id = ?',
+        [sale_id]
+      );
+      
+      if (saleInfo.length === 0) {
+        return res.status(400).json({ error: 'Sale not found' });
+      }
+      
+      returnWarehouseId = saleInfo[0].warehouse_id;
+      
       // Get the original sale items
       const [saleItems] = await db.execute(
         'SELECT product_id, quantity FROM sale_items WHERE sale_id = ?',
@@ -1537,7 +1682,7 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
       );
       
       if (saleItems.length === 0) {
-        return res.status(400).json({ error: 'Sale not found or has no items' });
+        return res.status(400).json({ error: 'Sale has no items' });
       }
       
       // Create a map of purchased quantities by product_id
@@ -1561,6 +1706,20 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
           });
         }
       }
+    } else if (store_id) {
+      // If no sale_id but store_id is provided, use store's warehouse
+      const [store] = await db.execute(
+        'SELECT warehouse_id FROM stores WHERE id = ? AND is_active = 1',
+        [store_id]
+      );
+      
+      if (store.length === 0) {
+        return res.status(400).json({ error: 'Store not found or inactive' });
+      }
+      
+      returnWarehouseId = store[0].warehouse_id;
+    } else {
+      return res.status(400).json({ error: 'Either sale_id or store_id is required for returns' });
     }
 
     // Start transaction
@@ -1577,15 +1736,6 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
         [customerId, total_amount, req.user.id, sale_id || null]
       );
       const returnId = returnResult.insertId;
-
-      // 1) Find default warehouse (shop) - do this once before the loop
-      const defaultWarehouseId = await getDefaultWarehouseId(connection);
-      
-      if (!defaultWarehouseId) {
-        await connection.rollback();
-        connection.release();
-        return res.status(500).json({ error: 'Default warehouse (shop) is not configured' });
-      }
       
       // Process each item in the return
       for (const item of items) {
@@ -1597,10 +1747,10 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
           [returnId, item.product_id, item.quantity, item.unit_price, totalPrice]
         );
         
-        // Update warehouse stock (add back the returned items) ALWAYS to default warehouse
+        // Update warehouse stock (add back the returned items) to the determined warehouse
         const [stockRows] = await connection.execute(
           'SELECT id, total_pieces FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
-          [defaultWarehouseId, item.product_id]
+          [returnWarehouseId, item.product_id]
         );
         
         const addQty = parseInt(item.quantity, 10);
@@ -1624,15 +1774,15 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
               old_volume_cbm, new_volume_cbm, reason)
              VALUES (?, ?, ?, 'IN', ?, ?, 0, 0, 0, 0, ?)`,
             [
-              defaultWarehouseId, item.product_id, req.user.id,
+              returnWarehouseId, item.product_id, req.user.id,
               oldTotalPieces, newTotalPieces,
-              `Return #${returnId}`
+              `Return #${returnId}${sale_id ? ` (sale #${sale_id})` : ''}`
             ]
           );
         } else {
           await connection.execute(
             'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces, weight_kg, volume_cbm) VALUES (?, ?, ?, 0, 0)',
-            [defaultWarehouseId, item.product_id, addQty]
+            [returnWarehouseId, item.product_id, addQty]
           );
           
           // Record the IN change for return (new item)
@@ -1644,9 +1794,9 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
               old_volume_cbm, new_volume_cbm, reason)
              VALUES (?, ?, ?, 'IN', ?, ?, 0, 0, 0, 0, ?)`,
             [
-              defaultWarehouseId, item.product_id, req.user.id,
+              returnWarehouseId, item.product_id, req.user.id,
               0, addQty,
-              `Return #${returnId}`
+              `Return #${returnId}${sale_id ? ` (sale #${sale_id})` : ''}`
             ]
           );
         }
