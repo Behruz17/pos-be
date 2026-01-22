@@ -265,6 +265,33 @@
 ]
 ```
 
+### PUT /api/warehouses/:id
+**Назначение:** Обновление информации о складе  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `id` - ID склада
+**Тело запроса:**
+```json
+{
+  "name": "Новое название склада",
+  "city": "Новый город (необязательно)",
+  "is_default": true (необязательно),
+  "is_main": false (необязательно)
+}
+```
+**Ответ:**
+```json
+{
+  "id": 1,
+  "name": "Новое название склада",
+  "city": "Новый город",
+  "is_default": true,
+  "is_main": false,
+  "message": "Warehouse updated successfully"
+}
+```
+
 ### DELETE /api/warehouses/:id
 **Назначение:** Удаление склада  
 **Заголовки:**

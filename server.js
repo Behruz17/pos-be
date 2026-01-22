@@ -524,6 +524,56 @@ app.get('/api/warehouses', authMiddleware, async (req, res) => {
   }
 });
 
+// PUT /api/warehouses/:id
+app.put('/api/warehouses/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, city, is_default, is_main } = req.body;
+
+    // Validate required fields
+    if (!name) {
+      return res.status(400).json({ error: 'Warehouse name is required' });
+    }
+
+    // Check if warehouse exists
+    const [existingWarehouse] = await db.execute('SELECT id FROM warehouses WHERE id = ?', [id]);
+    
+    if (existingWarehouse.length === 0) {
+      return res.status(404).json({ error: 'Warehouse not found' });
+    }
+    
+    // If setting as default, unset other defaults
+    if (is_default) {
+      await db.execute('UPDATE warehouses SET is_default = 0');
+    }
+    
+    // If setting as main, unset other main flags
+    if (is_main) {
+      await db.execute('UPDATE warehouses SET is_main = 0');
+    }
+
+    // Update the warehouse
+    const [result] = await db.execute(
+      'UPDATE warehouses SET name = ?, city = ?, is_default = COALESCE(?, is_default), is_main = COALESCE(?, is_main) WHERE id = ?',
+      [name, city || null, is_default, is_main, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Warehouse not found' });
+    }
+
+    const [updatedWarehouse] = await db.execute('SELECT id, name, city, is_default, is_main FROM warehouses WHERE id = ?', [id]);
+    
+    res.json({
+      ...updatedWarehouse[0],
+      message: 'Warehouse updated successfully'
+    });
+  } catch (error) {
+    console.error('Update warehouse error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // DELETE /api/warehouses/:id
 app.delete('/api/warehouses/:id', authMiddleware, async (req, res) => {
   try {
