@@ -552,11 +552,30 @@ app.put('/api/warehouses/:id', authMiddleware, async (req, res) => {
       await db.execute('UPDATE warehouses SET is_main = 0');
     }
 
+    // Prepare update parameters
+    let updateQuery = 'UPDATE warehouses SET name = ?';
+    let queryParams = [name];
+    
+    if (city !== undefined) {
+      updateQuery += ', city = ?';
+      queryParams.push(city || null);
+    }
+    
+    if (is_default !== undefined) {
+      updateQuery += ', is_default = ?';
+      queryParams.push(is_default ? 1 : 0);
+    }
+    
+    if (is_main !== undefined) {
+      updateQuery += ', is_main = ?';
+      queryParams.push(is_main ? 1 : 0);
+    }
+    
+    updateQuery += ' WHERE id = ?';
+    queryParams.push(id);
+
     // Update the warehouse
-    const [result] = await db.execute(
-      'UPDATE warehouses SET name = ?, city = ?, is_default = COALESCE(?, is_default), is_main = COALESCE(?, is_main) WHERE id = ?',
-      [name, city || null, is_default, is_main, id]
-    );
+    const [result] = await db.execute(updateQuery, queryParams);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Warehouse not found' });
