@@ -981,11 +981,21 @@ app.get('/api/warehouses/:warehouseId/products/:productId', authMiddleware, asyn
 // POST /api/inventory/receipt
 app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
   try {
-    const { warehouse_id, items } = req.body;
+    const { warehouse_id, supplier_id, items } = req.body;
 
     // Validate required fields
     if (!warehouse_id || !items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Warehouse ID and items array are required' });
+    }
+
+    // Validate that supplier exists and is active
+    if (!supplier_id) {
+      return res.status(400).json({ error: 'Supplier ID is required' });
+    }
+    
+    const [supplier] = await db.execute('SELECT id FROM suppliers WHERE id = ? AND status = 1', [supplier_id]);
+    if (supplier.length === 0) {
+      return res.status(400).json({ error: 'Supplier not found or inactive' });
     }
 
     // Validate each item
@@ -1005,8 +1015,8 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
 
       // Create stock receipt
       const [receiptResult] = await connection.execute(
-        'INSERT INTO stock_receipts (warehouse_id, created_by, total_amount) VALUES (?, ?, ?)',
-        [warehouse_id, req.user.id, total_amount]
+        'INSERT INTO stock_receipts (warehouse_id, created_by, total_amount, supplier_id) VALUES (?, ?, ?, ?)',
+        [warehouse_id, req.user.id, total_amount, supplier_id || null]
       );
       const receiptId = receiptResult.insertId;
 
@@ -1121,10 +1131,11 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
 app.get('/api/inventory/receipts', authMiddleware, async (req, res) => {
   try {
     const [rows] = await db.execute(
-      `SELECT sr.id, sr.warehouse_id, w.name as warehouse_name, sr.created_by, u.login as created_by_name,
+      `SELECT sr.id, sr.warehouse_id, w.name as warehouse_name, sr.supplier_id, s.name as supplier_name, sr.created_by, u.login as created_by_name,
               sr.created_at, sr.total_amount
        FROM stock_receipts sr
        JOIN warehouses w ON sr.warehouse_id = w.id
+       LEFT JOIN suppliers s ON sr.supplier_id = s.id
        JOIN users u ON sr.created_by = u.id
        ORDER BY sr.created_at DESC`
     );
@@ -1143,10 +1154,11 @@ app.get('/api/inventory/receipt/:id', authMiddleware, async (req, res) => {
 
     // Get receipt header
     const [receiptRows] = await db.execute(
-      `SELECT sr.id, sr.warehouse_id, w.name as warehouse_name, sr.created_by, u.login as created_by_name,
+      `SELECT sr.id, sr.warehouse_id, w.name as warehouse_name, sr.supplier_id, s.name as supplier_name, sr.created_by, u.login as created_by_name,
               sr.created_at, sr.total_amount
        FROM stock_receipts sr
        JOIN warehouses w ON sr.warehouse_id = w.id
+       LEFT JOIN suppliers s ON sr.supplier_id = s.id
        JOIN users u ON sr.created_by = u.id
        WHERE sr.id = ?`,
       [id]

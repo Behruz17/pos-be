@@ -509,6 +509,7 @@
 ```json
 {
   "warehouse_id": 1,
+  "supplier_id": 1 (обязательно),
   "items": [
     {
       "product_id": 1,
@@ -536,6 +537,8 @@
 - При каждом приходе товара автоматически создаются записи в истории изменений склада (`stock_changes`) с типом `IN`
 - Для каждого товара в приходе фиксируются старые и новые значения остатков, веса и объема
 - В поле `reason` указывается номер документа прихода (например, `Receipt #123`) для удобства отслеживания
+- Добавлено обязательное поле `supplier_id` для связи прихода с поставщиком
+- Проверяется что поставщик существует и активен
 
 ### GET /api/inventory/receipts
 **Назначение:** Получение списка всех документов прихода  
@@ -548,6 +551,8 @@
     "id": 1,
     "warehouse_id": 1,
     "warehouse_name": "Main Warehouse",
+    "supplier_id": 1,
+    "supplier_name": "Supplier Name",
     "created_by": 1,
     "created_by_name": "admin",
     "created_at": "2023-01-01T00:00:00.000Z",
@@ -568,6 +573,8 @@
   "id": 1,
   "warehouse_id": 1,
   "warehouse_name": "Main Warehouse",
+  "supplier_id": 1,
+  "supplier_name": "Supplier Name",
   "created_by": 1,
   "created_by_name": "admin",
   "created_at": "2023-01-01T00:00:00.000Z",
