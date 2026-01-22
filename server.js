@@ -593,6 +593,137 @@ app.put('/api/warehouses/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// Supplier Management Routes
+
+// POST /api/suppliers
+app.post('/api/suppliers', authMiddleware, async (req, res) => {
+  try {
+    const { name, phone, balance, status } = req.body;
+
+    // Validate required fields
+    if (!name) {
+      return res.status(400).json({ error: 'Supplier name is required' });
+    }
+
+    const [result] = await db.execute(
+      'INSERT INTO suppliers (name, phone, balance, status) VALUES (?, ?, ?, ?)',
+      [name, phone || null, balance || 0, status !== undefined ? status : 1]
+    );
+
+    res.status(201).json({
+      id: result.insertId,
+      name,
+      phone,
+      balance: balance || 0,
+      status: status !== undefined ? status : 1,
+      message: 'Supplier created successfully'
+    });
+  } catch (error) {
+    console.error('Add supplier error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/suppliers
+app.get('/api/suppliers', authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      'SELECT id, name, phone, balance, status, created_at, updated_at FROM suppliers WHERE status IN (0, 1) ORDER BY name'
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error('Get suppliers error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/suppliers/:id
+app.get('/api/suppliers/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await db.execute(
+      'SELECT id, name, phone, balance, status, created_at, updated_at FROM suppliers WHERE id = ?',
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Supplier not found' });
+    }
+
+    res.json(rows[0]);
+  } catch (error) {
+    console.error('Get supplier error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PUT /api/suppliers/:id
+app.put('/api/suppliers/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, phone, balance, status } = req.body;
+
+    // Validate required fields
+    if (!name) {
+      return res.status(400).json({ error: 'Supplier name is required' });
+    }
+
+    // Check if supplier exists
+    const [existingSupplier] = await db.execute('SELECT id FROM suppliers WHERE id = ?', [id]);
+    
+    if (existingSupplier.length === 0) {
+      return res.status(404).json({ error: 'Supplier not found' });
+    }
+
+    const [result] = await db.execute(
+      'UPDATE suppliers SET name = ?, phone = ?, balance = ?, status = ? WHERE id = ?',
+      [name, phone || null, balance !== undefined ? balance : 0, status !== undefined ? status : 1, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Supplier not found' });
+    }
+
+    const [updatedSupplier] = await db.execute(
+      'SELECT id, name, phone, balance, status, created_at, updated_at FROM suppliers WHERE id = ?',
+      [id]
+    );
+    
+    res.json({
+      ...updatedSupplier[0],
+      message: 'Supplier updated successfully'
+    });
+  } catch (error) {
+    console.error('Update supplier error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// DELETE /api/suppliers/:id (soft delete)
+app.delete('/api/suppliers/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if supplier exists
+    const [existingSupplier] = await db.execute('SELECT id FROM suppliers WHERE id = ?', [id]);
+    
+    if (existingSupplier.length === 0) {
+      return res.status(404).json({ error: 'Supplier not found' });
+    }
+    
+    // Soft delete by setting status to 0
+    await db.execute('UPDATE suppliers SET status = 0 WHERE id = ?', [id]);
+    
+    res.json({
+      message: 'Supplier deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete supplier error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // DELETE /api/warehouses/:id
 app.delete('/api/warehouses/:id', authMiddleware, async (req, res) => {
   try {
