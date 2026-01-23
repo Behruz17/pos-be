@@ -513,6 +513,7 @@
   "items": [
     {
       "product_id": 1,
+      "product_name": "Название товара",
       "boxes_qty": 5,
       "pieces_per_box": 10,
       "loose_pieces": 5,
@@ -539,6 +540,7 @@
 - В поле `reason` указывается номер документа прихода (например, `Receipt #123`) для удобства отслеживания
 - Добавлено обязательное поле `supplier_id` для связи прихода с поставщиком
 - Проверяется что поставщик существует и активен
+- Для каждого товара в приходе теперь требуется указать `product_name` - если товар с указанным `product_id` не существует, он будет создан с указанным именем
 
 ### GET /api/inventory/receipts
 **Назначение:** Получение списка всех документов прихода  
@@ -1081,6 +1083,75 @@
 }
 ```
 
+### POST /api/suppliers/:id/payment
+**Назначение:** Запись оплаты поставщику  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `id` - ID поставщика
+**Тело запроса:**
+```json
+{
+  "amount": 1000.50,
+  "warehouse_id": 1 (опционально),
+  "note": "Примечание к платежу (опционально)"
+}
+```
+**Ответ:**
+```json
+{
+  "operation_id": 1,
+  "supplier_id": 1,
+  "amount": 1000.50,
+  "new_balance": -500.25,
+  "message": "Payment recorded successfully"
+}
+```
+
+### GET /api/suppliers/:supplierId/operations
+**Назначение:** Получение списка операций поставщика (приходы товаров, оплаты и т.д.)  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `supplierId` - ID поставщика
+- `warehouseId` (query параметр, опционально) - ID склада для фильтрации
+- `type` (query параметр, опционально) - Тип операции ('RECEIPT' или 'PAYMENT')
+- `limit` (query параметр, опционально) - Ограничение количества результатов
+
+**Примеры использования:**
+- `/api/suppliers/1/operations` - все операции поставщика ID 1
+- `/api/suppliers/1/operations?warehouseId=2` - операции поставщика ID 1 только по складу ID 2
+- `/api/suppliers/1/operations?type=RECEIPT` - только операции типа 'RECEIPT' для поставщика ID 1
+- `/api/suppliers/1/operations?type=PAYMENT&warehouseId=1` - операции типа 'PAYMENT' для поставщика ID 1 по складу ID 1
+
+**Ответ:**
+```json
+{
+  "supplier": {
+    "id": 1,
+    "name": "Supplier Name",
+    "phone": "+79991234567",
+    "balance": 1000.50
+  },
+  "operations": [
+    {
+      "id": 1,
+      "supplier_id": 1,
+      "supplier_name": "Supplier Name",
+      "warehouse_id": 1,
+      "warehouse_name": "Main Warehouse",
+      "sum": 5000.00,
+      "type": "RECEIPT",
+      "date": "2023-01-01T00:00:00.000Z",
+      "reference_id": 1,
+      "reference_type": null,
+      "created_by_name": "admin",
+      "note": "Примечание к операции"
+    }
+  ]
+}
+```
+
 ### DELETE /api/suppliers/:id
 **Назначение:** Удаление поставщика (мягкое удаление)  
 **Заголовки:**
@@ -1097,6 +1168,33 @@
 ```json
 {
   "error": "Supplier not found"
+}
+```
+
+### GET /api/warehouses/:warehouseId/suppliers
+**Назначение:** Получение списка поставщиков, которые имели операции с указанным складом (исторически доставляли товары на этот склад)  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `warehouseId` - ID склада
+**Ответ:**
+```json
+{
+  "warehouse": {
+    "id": 1,
+    "name": "Название склада"
+  },
+  "suppliers": [
+    {
+      "id": 1,
+      "name": "Название поставщика",
+      "phone": "+79991234567",
+      "balance": 1000.50,
+      "status": 1,
+      "created_at": "2023-01-01T00:00:00.000Z",
+      "updated_at": "2023-01-01T00:00:00.000Z"
+    }
+  ]
 }
 ```
 

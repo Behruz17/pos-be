@@ -628,7 +628,7 @@ app.post('/api/suppliers', authMiddleware, async (req, res) => {
 app.get('/api/suppliers', authMiddleware, async (req, res) => {
   try {
     const [rows] = await db.execute(
-      'SELECT id, name, phone, balance, status, created_at, updated_at FROM suppliers WHERE status IN (0, 1) ORDER BY name'
+      'SELECT id, name, phone, balance, status, created_at, updated_at FROM suppliers WHERE status IN (1) ORDER BY name'
     );
     res.json(rows);
   } catch (error) {
@@ -696,6 +696,57 @@ app.put('/api/suppliers/:id', authMiddleware, async (req, res) => {
     });
   } catch (error) {
     console.error('Update supplier error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/suppliers/:id/payment
+app.post('/api/suppliers/:id/payment', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amount, warehouse_id, note } = req.body;
+
+    // Validate required fields
+    if (!amount) {
+      return res.status(400).json({ error: 'Amount is required' });
+    }
+
+    // Check if supplier exists
+    const [existingSupplier] = await db.execute('SELECT id, balance FROM suppliers WHERE id = ? AND status = 1', [id]);
+    
+    if (existingSupplier.length === 0) {
+      return res.status(404).json({ error: 'Supplier not found' });
+    }
+
+    // Validate warehouse if provided
+    let warehouseId = null;
+    if (warehouse_id) {
+      const [warehouse] = await db.execute('SELECT id FROM warehouses WHERE id = ?', [warehouse_id]);
+      if (warehouse.length === 0) {
+        return res.status(400).json({ error: 'Warehouse not found' });
+      }
+      warehouseId = warehouse_id;
+    }
+    
+    // Update supplier balance (decrease it since payment reduces debt)
+    const newBalance = parseFloat(existingSupplier[0].balance) - parseFloat(amount);
+    await db.execute('UPDATE suppliers SET balance = ? WHERE id = ?', [newBalance, id]);
+    
+    // Record the payment operation
+    const [result] = await db.execute(
+      'INSERT INTO supplier_operations (supplier_id, warehouse_id, sum, type) VALUES (?, ?, ?, ?)',
+      [id, warehouseId, amount, 'PAYMENT']
+    );
+    
+    res.json({
+      operation_id: result.insertId,
+      supplier_id: id,
+      amount: amount,
+      new_balance: newBalance,
+      message: 'Payment recorded successfully'
+    });
+  } catch (error) {
+    console.error('Record supplier payment error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1108,10 +1159,21 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
         }
       }
 
+      // Update supplier balance (increase it since we received goods from supplier)
+      const [currentSupplier] = await connection.execute('SELECT balance FROM suppliers WHERE id = ?', [supplier_id]);
+      const newBalance = parseFloat(currentSupplier[0].balance) + parseFloat(total_amount);
+      await connection.execute('UPDATE suppliers SET balance = ? WHERE id = ?', [newBalance, supplier_id]);
+      
+      // Log the supplier operation for this receipt
+      await connection.execute(
+        'INSERT INTO supplier_operations (supplier_id, warehouse_id, sum, type) VALUES (?, ?, ?, ?)',
+        [supplier_id, warehouse_id, total_amount, 'RECEIPT']
+      );
+              
       // Commit transaction
       await connection.commit();
       connection.release();
-
+      
       res.status(201).json({
         id: receiptId,
         message: 'Inventory receipt added successfully'
@@ -1146,6 +1208,93 @@ app.get('/api/inventory/receipts', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
+
+// GET /api/suppliers/:supplierId/operations
+app.get('/api/suppliers/:supplierId/operations', authMiddleware, async (req, res) => {
+  try {
+    const { supplierId } = req.params;
+    const { warehouseId, type, limit } = req.query;
+
+    // Verify supplier exists
+    const [supplier] = await db.execute('SELECT id, name, phone, balance FROM suppliers WHERE id = ? AND status = 1', [supplierId]);
+    if (supplier.length === 0) {
+      return res.status(404).json({ error: 'Supplier not found' });
+    }
+
+    // Build query based on filters
+    let query = `SELECT so.id, so.supplier_id, s.name as supplier_name, so.warehouse_id, 
+                    w.name as warehouse_name, so.sum, so.type, so.date
+             FROM supplier_operations so
+             LEFT JOIN suppliers s ON so.supplier_id = s.id
+             LEFT JOIN warehouses w ON so.warehouse_id = w.id
+             WHERE so.supplier_id = ?`;
+    
+    const queryParams = [supplierId];
+    
+    // Add warehouse filter if provided
+    if (warehouseId) {
+      query += ' AND so.warehouse_id = ?';
+      queryParams.push(warehouseId);
+    }
+    
+    // Add type filter if provided
+    if (type) {
+      query += ' AND so.type = ?';
+      queryParams.push(type);
+    }
+    
+    query += ' ORDER BY so.date DESC';
+    
+    // Add limit if provided
+    if (limit) {
+      query += ' LIMIT ?';
+      queryParams.push(parseInt(limit));
+    }
+    
+    const [operations] = await db.execute(query, queryParams);
+
+    res.json({
+      supplier: supplier[0],
+      operations: operations
+    });
+  } catch (error) {
+    console.error('Get supplier operations error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/warehouses/:warehouseId/suppliers
+app.get('/api/warehouses/:warehouseId/suppliers', authMiddleware, async (req, res) => {
+  try {
+    const { warehouseId } = req.params;
+
+    // Verify warehouse exists
+    const [warehouse] = await db.execute('SELECT id, name FROM warehouses WHERE id = ?', [warehouseId]);
+    if (warehouse.length === 0) {
+      return res.status(404).json({ error: 'Warehouse not found' });
+    }
+
+    // Get suppliers who have had operations (receipts/payments) with this warehouse
+    const [suppliers] = await db.execute(
+      `SELECT DISTINCT s.id, s.name, s.phone, s.balance, s.status, s.created_at, s.updated_at
+       FROM suppliers s
+       INNER JOIN supplier_operations so ON s.id = so.supplier_id
+       WHERE so.warehouse_id = ? AND s.status = 1
+       ORDER BY s.name`,
+      [warehouseId]
+    );
+
+    res.json({
+      warehouse: warehouse[0],
+      suppliers: suppliers
+    });
+  } catch (error) {
+    console.error('Get warehouse suppliers error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+
 
 // GET /api/inventory/receipt/:id
 app.get('/api/inventory/receipt/:id', authMiddleware, async (req, res) => {
