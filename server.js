@@ -313,7 +313,7 @@ app.delete('/api/users/:id', authMiddleware, async (req, res) => {
 // POST /api/products
 app.post('/api/products', upload.single('image'), authMiddleware, async (req, res) => {
   try {
-    const { name, manufacturer } = req.body;
+    const { name, manufacturer, product_code } = req.body;
     // Обрабатываем изображение - может быть как URL, так и загруженный файл
     let image = null;
     if (req.file) {
@@ -327,16 +327,21 @@ app.post('/api/products', upload.single('image'), authMiddleware, async (req, re
     if (!name) {
       return res.status(400).json({ error: 'Product name is required' });
     }
+    
+    if (!product_code) {
+      return res.status(400).json({ error: 'Product code is required' });
+    }
 
     const [result] = await db.execute(
-      'INSERT INTO products (name, manufacturer, image) VALUES (?, ?, ?)',
-      [name, manufacturer || null, image]
+      'INSERT INTO products (name, manufacturer, product_code, image) VALUES (?, ?, ?, ?)',
+      [name, manufacturer || null, product_code, image]
     );
 
     res.status(201).json({
       id: result.insertId,
       name,
       manufacturer,
+      product_code,
       image,
       message: 'Product added successfully'
     });
@@ -351,7 +356,7 @@ app.get('/api/products', authMiddleware, async (req, res) => {
   try {
     // Get products with their last unit prices from sales, total stock, and purchase/selling prices
     const [rows] = await db.execute(
-      `SELECT p.id, p.name, p.manufacturer, p.image, p.created_at, `
+      `SELECT p.id, p.name, p.manufacturer, p.product_code, p.image, p.created_at, `
       + `COALESCE(last_sale.last_unit_price, 0) as last_unit_price, `
       + `COALESCE(total_stock.total_quantity, 0) as total_stock, `
       + `COALESCE(prices.purchase_cost, 0) as purchase_cost, `
@@ -387,7 +392,7 @@ app.get('/api/products', authMiddleware, async (req, res) => {
 app.put('/api/products/:id', upload.single('image'), authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, manufacturer } = req.body;
+    const { name, manufacturer, product_code } = req.body;
     
     // Обрабатываем изображение - может быть как URL, так и загруженный файл
     let image = null;
@@ -408,15 +413,15 @@ app.put('/api/products/:id', upload.single('image'), authMiddleware, async (req,
     }
 
     const [result] = await db.execute(
-      'UPDATE products SET name = ?, manufacturer = ?, image = ? WHERE id = ?',
-      [name, manufacturer || null, image, id]
+      'UPDATE products SET name = ?, manufacturer = ?, product_code = ?, image = ? WHERE id = ?',
+      [name, manufacturer || null, product_code || null, image, id]
     );
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    const [updatedProduct] = await db.execute('SELECT id, name, manufacturer, image, created_at FROM products WHERE id = ?', [id]);
+    const [updatedProduct] = await db.execute('SELECT id, name, manufacturer, product_code, image, created_at FROM products WHERE id = ?', [id]);
     
     res.json({
       ...updatedProduct[0],
@@ -1715,6 +1720,80 @@ app.put('/api/customers/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/stores/:storeId/customers
+app.get('/api/stores/:storeId/customers', authMiddleware, async (req, res) => {
+  try {
+    const { storeId } = req.params;
+
+    // Verify store exists
+    const [store] = await db.execute('SELECT id, name, warehouse_id FROM stores WHERE id = ?', [storeId]);
+    if (store.length === 0) {
+      return res.status(404).json({ error: 'Store not found' });
+    }
+
+    // Get customers who have made purchases at this store
+    const [customers] = await db.execute(
+      `SELECT DISTINCT c.id, c.full_name, c.phone, c.city, c.balance, c.created_at, c.updated_at
+       FROM customers c
+       INNER JOIN sales s ON c.id = s.customer_id
+       WHERE s.store_id = ?
+       ORDER BY c.full_name`,
+      [storeId]
+    );
+
+    res.json({
+      store: store[0],
+      customers: customers
+    });
+  } catch (error) {
+    console.error('Get store customers error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/customers/:customerId/sales/:storeId
+app.get('/api/customers/:customerId/sales/:storeId', authMiddleware, async (req, res) => {
+  try {
+    const { customerId, storeId } = req.params;
+
+    // Verify customer exists
+    const [customer] = await db.execute('SELECT id, full_name, phone, city, balance FROM customers WHERE id = ?', [customerId]);
+    if (customer.length === 0) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+
+    // Verify store exists
+    const [store] = await db.execute('SELECT id, name, warehouse_id FROM stores WHERE id = ?', [storeId]);
+    if (store.length === 0) {
+      return res.status(404).json({ error: 'Store not found' });
+    }
+
+    // Get sales records for this customer at this store
+    const [sales] = await db.execute(
+      `SELECT s.id, s.customer_id, c.full_name as customer_name, s.total_amount, s.payment_status, s.created_by,
+              u.login as created_by_name, s.created_at, s.store_id, s.warehouse_id,
+              st.name as store_name, w.name as warehouse_name
+       FROM sales s
+       LEFT JOIN customers c ON s.customer_id = c.id
+       LEFT JOIN stores st ON s.store_id = st.id
+       LEFT JOIN warehouses w ON s.warehouse_id = w.id
+       JOIN users u ON s.created_by = u.id
+       WHERE s.customer_id = ? AND s.store_id = ?
+       ORDER BY s.created_at DESC`,
+      [customerId, storeId]
+    );
+
+    res.json({
+      customer: customer[0],
+      store: store[0],
+      sales: sales
+    });
+  } catch (error) {
+    console.error('Get customer store sales error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // DELETE /api/customers/:id
 app.delete('/api/customers/:id', authMiddleware, async (req, res) => {
   try {
@@ -1842,7 +1921,7 @@ app.post('/api/customers/:id/update-balance', authMiddleware, async (req, res) =
 // POST /api/sales
 app.post('/api/sales', authMiddleware, async (req, res) => {
   try {
-    const { customer_id, store_id, items } = req.body;
+    const { customer_id, store_id, items, payment_status = 'DEBT' } = req.body;
 
     // Validate required fields
     if (!store_id) {
@@ -1851,6 +1930,11 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
     
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Items array is required' });
+    }
+
+    // Validate payment status
+    if (payment_status !== 'PAID' && payment_status !== 'DEBT') {
+      return res.status(400).json({ error: 'Payment status must be either PAID or DEBT' });
     }
 
     // Validate each item
@@ -1891,10 +1975,10 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
       // Calculate total amount
       const total_amount = items.reduce((sum, item) => sum + (parseFloat(item.unit_price) * parseInt(item.quantity)), 0);
 
-      // Create sale with store_id and warehouse_id
+      // Create sale with store_id, warehouse_id, and payment_status
       const [saleResult] = await connection.execute(
-        'INSERT INTO sales (customer_id, store_id, warehouse_id, total_amount, created_by) VALUES (?, ?, ?, ?, ?)',
-        [customerId, store_id, storeWarehouseId, total_amount, req.user.id]
+        'INSERT INTO sales (customer_id, store_id, warehouse_id, total_amount, payment_status, created_by) VALUES (?, ?, ?, ?, ?, ?)',
+        [customerId, store_id, storeWarehouseId, total_amount, payment_status, req.user.id]
       );
       const saleId = saleResult.insertId;
 
@@ -1945,11 +2029,27 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
         }
       }
 
-      // Update customer balance (subtract the purchase amount)
-      await connection.execute(
-        'UPDATE customers SET balance = balance - ? WHERE id = ?',
-        [total_amount, customerId]
-      );
+      // Update customer balance based on payment status and log the operation
+      if (payment_status === 'DEBT') {
+        // If it's debt, decrease customer balance (they owe money)
+        await connection.execute(
+          'UPDATE customers SET balance = balance - ? WHERE id = ?',
+          [total_amount, customerId]
+        );
+        
+        // Log the debt operation
+        await connection.execute(
+          'INSERT INTO customer_operations (customer_id, store_id, sum, type) VALUES (?, ?, ?, ?)',
+          [customerId, store_id, total_amount, 'DEBT']
+        );
+      } else {
+        // If it's paid, don't change the balance (assuming payment was made separately)
+        // Log the paid operation
+        await connection.execute(
+          'INSERT INTO customer_operations (customer_id, store_id, sum, type) VALUES (?, ?, ?, ?)',
+          [customerId, store_id, total_amount, 'PAID']
+        );
+      }
 
       // Commit transaction
       await connection.commit();
@@ -1974,7 +2074,7 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
 app.get('/api/sales', authMiddleware, async (req, res) => {
   try {
     const [rows] = await db.execute(
-      `SELECT s.id, s.customer_id, c.full_name as customer_name, s.total_amount, s.created_by, 
+      `SELECT s.id, s.customer_id, c.full_name as customer_name, s.total_amount, s.payment_status, s.created_by, 
               u.login as created_by_name, s.created_at, s.store_id, s.warehouse_id, st.name as store_name, w.name as warehouse_name
        FROM sales s
        LEFT JOIN customers c ON s.customer_id = c.id
@@ -1998,7 +2098,7 @@ app.get('/api/sales/:id', authMiddleware, async (req, res) => {
 
     // Get sale header
     const [saleRows] = await db.execute(
-      `SELECT s.id, s.customer_id, c.full_name as customer_name, s.total_amount, s.created_by, 
+      `SELECT s.id, s.customer_id, c.full_name as customer_name, s.total_amount, s.payment_status, s.created_by, 
               u.login as created_by_name, s.created_at, s.store_id, s.warehouse_id, st.name as store_name, w.name as warehouse_name
        FROM sales s
        LEFT JOIN customers c ON s.customer_id = c.id

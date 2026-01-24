@@ -393,6 +393,7 @@
 {
   "name": "Название товара",
   "manufacturer": "Производитель (необязательно)",
+  "product_code": "Уникальный код товара (обязательно)",
   "image": "Ссылка на изображение товара (необязательно)"
 }
 ```
@@ -409,6 +410,7 @@
   "id": 1,
   "name": "Название товара",
   "manufacturer": "Производитель",
+  "product_code": "UNIQUE_CODE",
   "image": "/uploads/filename.jpg",
   "message": "Product added successfully"
 }
@@ -458,6 +460,7 @@
     "id": 1,
     "name": "Название товара",
     "manufacturer": "Производитель",
+    "product_code": "UNIQUE_CODE",
     "image": "Ссылка на изображение товара",
     "created_at": "2023-01-01T00:00:00.000Z",
     "last_unit_price": 600.00,
@@ -842,6 +845,75 @@
 }
 ```
 
+### GET /api/customers/:customerId/sales/:storeId
+**Назначение:** Получение списка записей из таблицы sales для конкретного клиента в указанном магазине  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `customerId` - ID клиента
+- `storeId` - ID магазина
+**Ответ:**
+```json
+{
+  "customer": {
+    "id": 1,
+    "full_name": "Ф.И.О. клиента",
+    "phone": "+79991234567",
+    "city": "Город",
+    "balance": -123320.00
+  },
+  "store": {
+    "id": 1,
+    "name": "Название магазина",
+    "warehouse_id": 1
+  },
+  "sales": [
+    {
+      "id": 1,
+      "customer_id": 1,
+      "customer_name": "Ф.И.О. клиента",
+      "total_amount": 1000.00,
+      "payment_status": "DEBT",
+      "created_by": 1,
+      "created_by_name": "admin",
+      "created_at": "2023-01-01T00:00:00.000Z",
+      "store_id": 1,
+      "warehouse_id": 1,
+      "store_name": "Название магазина",
+      "warehouse_name": "Название склада"
+    }
+  ]
+}
+```
+
+### GET /api/stores/:storeId/customers
+**Назначение:** Получение списка клиентов, которые совершали покупки в указанном магазине  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `storeId` - ID магазина
+**Ответ:**
+```json
+{
+  "store": {
+    "id": 1,
+    "name": "Название магазина",
+    "warehouse_id": 1
+  },
+  "customers": [
+    {
+      "id": 1,
+      "full_name": "Ф.И.О. клиента",
+      "phone": "+79991234567",
+      "city": "Город",
+      "balance": -123320.00,
+      "created_at": "2023-01-01T00:00:00.000Z",
+      "updated_at": "2023-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
 ### GET /api/customers/:id/details
 **Назначение:** Получение подробной информации о клиенте, включая историю транзакций  
 **Заголовки:**
@@ -909,6 +981,7 @@
 {
   "customer_id": 1 (необязательно, если не указан - используется демо-клиент),
   "store_id": 1 (обязательно),
+  "payment_status": "PAID" или "DEBT" (по умолчанию "DEBT"),
   "items": [
     {
       "product_id": 1,
@@ -943,6 +1016,7 @@
     "customer_id": 1,
     "customer_name": "Ф.И.О. клиента",
     "total_amount": 1000.00,
+    "payment_status": "DEBT",
     "created_by": 1,
     "created_by_name": "admin",
     "created_at": "2023-01-01T00:00:00.000Z",
@@ -967,6 +1041,7 @@
   "customer_id": 1,
   "customer_name": "Ф.И.О. клиента",
   "total_amount": 1000.00,
+  "payment_status": "DEBT",
   "created_by": 1,
   "created_by_name": "admin",
   "created_at": "2023-01-01T00:00:00.000Z",
