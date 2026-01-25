@@ -433,6 +433,7 @@ CREATE TABLE `supplier_operations` (
   `id` int NOT NULL,
   `supplier_id` int NOT NULL,
   `warehouse_id` int DEFAULT NULL,
+  `receipt_id` int DEFAULT NULL,
   `sum` decimal(10,2) NOT NULL,
   `type` enum('RECEIPT','PAYMENT') NOT NULL,
   `date` timestamp NULL DEFAULT CURRENT_TIMESTAMP
@@ -878,7 +879,8 @@ ALTER TABLE `stores`
 --
 ALTER TABLE `supplier_operations`
   ADD CONSTRAINT `supplier_operations_ibfk_1` FOREIGN KEY (`supplier_id`) REFERENCES `suppliers` (`id`),
-  ADD CONSTRAINT `supplier_operations_ibfk_2` FOREIGN KEY (`warehouse_id`) REFERENCES `warehouses` (`id`);
+  ADD CONSTRAINT `supplier_operations_ibfk_2` FOREIGN KEY (`warehouse_id`) REFERENCES `warehouses` (`id`),
+  ADD CONSTRAINT `supplier_operations_ibfk_3` FOREIGN KEY (`receipt_id`) REFERENCES `stock_receipts` (`id`) ON DELETE SET NULL;
 
 --
 -- Ограничения внешнего ключа таблицы `tokens`

@@ -394,7 +394,8 @@
   "name": "Название товара",
   "manufacturer": "Производитель (необязательно)",
   "product_code": "Уникальный код товара (обязательно)",
-  "image": "Ссылка на изображение товара (необязательно)"
+  "image": "Ссылка на изображение товара (необязательно)",
+  "notification_threshold": 10 (необязательно, по умолчанию 10)
 }
 ```
 
@@ -403,6 +404,7 @@
 - `name` (string) - Название товара
 - `manufacturer` (string, опционально) - Производитель
 - `image` (file) - Изображение товара
+- `notification_threshold` (int, опционально) - Количество, при котором товар считается "отсутствующим" (по умолчанию 10)
 
 **Ответ:**
 ```json
@@ -412,6 +414,7 @@
   "manufacturer": "Производитель",
   "product_code": "UNIQUE_CODE",
   "image": "/uploads/filename.jpg",
+  "notification_threshold": 10,
   "message": "Product added successfully"
 }
 ```
@@ -428,7 +431,8 @@
 {
   "name": "Новое название товара",
   "manufacturer": "Новый производитель (необязательно)",
-  "image": "Ссылка на изображение товара (необязательно)"
+  "image": "Ссылка на изображение товара (необязательно)",
+  "notification_threshold": 15 (необязательно)
 }
 ```
 
@@ -437,6 +441,7 @@
 - `name` (string) - Новое название товара
 - `manufacturer` (string, опционально) - Новый производитель
 - `image` (file) - Новое изображение товара
+- `notification_threshold` (int, опционально) - Количество, при котором товар считается "отсутствующим"
 
 **Ответ:**
 ```json
@@ -445,6 +450,7 @@
   "name": "Новое название товара",
   "manufacturer": "Новый производитель",
   "image": "/uploads/filename.jpg",
+  "notification_threshold": 15,
   "message": "Product updated successfully"
 }
 ```
@@ -462,6 +468,7 @@
     "manufacturer": "Производитель",
     "product_code": "UNIQUE_CODE",
     "image": "Ссылка на изображение товара",
+    "notification_threshold": 10,
     "created_at": "2023-01-01T00:00:00.000Z",
     "last_unit_price": 600.00,
     "total_stock": 30,
@@ -500,6 +507,25 @@
 {
   "error": "Cannot delete product that has been used in inventory receipts."
 }
+```
+
+### GET /api/products/missing
+**Назначение:** Получение списка товаров с количеством ниже порога уведомления  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Ответ:**
+```json
+[
+  {
+    "id": 1,
+    "name": "Название товара",
+    "manufacturer": "Производитель",
+    "product_code": "UNIQUE_CODE",
+    "image": "Ссылка на изображение товара",
+    "notification_threshold": 10,
+    "total_stock": 5
+  }
+]
 ```
 
 ## 6. Приход товаров на склад
@@ -591,6 +617,7 @@
       "product_name": "Название товара",
       "manufacturer": "Производитель",
       "image": "Ссылка на изображение товара",
+      "product_code": "UNIQUE_CODE",
       "boxes_qty": 5,
       "pieces_per_box": 10,
       "loose_pieces": 5,
@@ -603,6 +630,43 @@
     }
   ]
 }
+```
+
+### GET /api/stock-receipt-items
+**Назначение:** Получение записей из таблицы stock_receipt_items с возможностью фильтрации по receipt_id, supplier_id и warehouse_id  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры (query):**
+- `receipt_id` (опционально) - ID документа прихода для фильтрации
+- `supplier_id` (опционально) - ID поставщика для фильтрации
+- `warehouse_id` (опционально) - ID склада для фильтрации
+**Примеры использования:**
+- `/api/stock-receipt-items?supplier_id=1&warehouse_id=11` - получить все записи прихода для поставщика ID 1 и склада ID 11
+- `/api/stock-receipt-items?receipt_id=5` - получить все товары для конкретного документа прихода ID 5
+- `/api/stock-receipt-items?supplier_id=1&warehouse_id=11&receipt_id=5` - получить конкретный документ прихода для поставщика и склада
+
+**Ответ:**
+```json
+[
+  {
+    "id": 1,
+    "receipt_id": 5,
+    "product_id": 1,
+    "product_name": "Название товара",
+    "manufacturer": "Производитель",
+    "image": "Ссылка на изображение товара",
+    "product_code": "UNIQUE_CODE",
+    "boxes_qty": 5,
+    "pieces_per_box": 10,
+    "loose_pieces": 5,
+    "total_pieces": 55,
+    "weight_kg": 25.5,
+    "volume_cbm": 1.2,
+    "amount": 5000.00,
+    "purchase_cost": 400.00,
+    "selling_price": 600.00
+  }
+]
 ```
 
 ## 7. Управление остатками на складах
@@ -1215,13 +1279,10 @@
       "supplier_name": "Supplier Name",
       "warehouse_id": 1,
       "warehouse_name": "Main Warehouse",
+      "receipt_id": 5,
       "sum": 5000.00,
       "type": "RECEIPT",
-      "date": "2023-01-01T00:00:00.000Z",
-      "reference_id": 1,
-      "reference_type": null,
-      "created_by_name": "admin",
-      "note": "Примечание к операции"
+      "date": "2023-01-01T00:00:00.000Z"
     }
   ]
 }

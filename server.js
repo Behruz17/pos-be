@@ -313,7 +313,7 @@ app.delete('/api/users/:id', authMiddleware, async (req, res) => {
 // POST /api/products
 app.post('/api/products', upload.single('image'), authMiddleware, async (req, res) => {
   try {
-    const { name, manufacturer, product_code } = req.body;
+    const { name, manufacturer, product_code, notification_threshold } = req.body;
     // Обрабатываем изображение - может быть как URL, так и загруженный файл
     let image = null;
     if (req.file) {
@@ -331,10 +331,23 @@ app.post('/api/products', upload.single('image'), authMiddleware, async (req, re
     if (!product_code) {
       return res.status(400).json({ error: 'Product code is required' });
     }
+    
+    // Set default notification threshold to 10 if not provided
+    const threshold = notification_threshold !== undefined ? parseInt(notification_threshold, 10) : 10;
+
+    // Check if product_code already exists
+    const [existingProduct] = await db.execute(
+      'SELECT id FROM products WHERE product_code = ?',
+      [product_code]
+    );
+    
+    if (existingProduct.length > 0) {
+      return res.status(400).json({ error: 'Product code must be unique' });
+    }
 
     const [result] = await db.execute(
-      'INSERT INTO products (name, manufacturer, product_code, image) VALUES (?, ?, ?, ?)',
-      [name, manufacturer || null, product_code, image]
+      'INSERT INTO products (name, manufacturer, product_code, image, notification_threshold) VALUES (?, ?, ?, ?, ?)',
+      [name, manufacturer || null, product_code, image, threshold]
     );
 
     res.status(201).json({
@@ -347,6 +360,10 @@ app.post('/api/products', upload.single('image'), authMiddleware, async (req, re
     });
   } catch (error) {
     console.error('Add product error:', error);
+    // Handle duplicate entry error specifically
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({ error: 'Product code must be unique' });
+    }
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -356,7 +373,7 @@ app.get('/api/products', authMiddleware, async (req, res) => {
   try {
     // Get products with their last unit prices from sales, total stock, and purchase/selling prices
     const [rows] = await db.execute(
-      `SELECT p.id, p.name, p.manufacturer, p.product_code, p.image, p.created_at, `
+      `SELECT p.id, p.name, p.manufacturer, p.product_code, p.image, p.notification_threshold, p.created_at, `
       + `COALESCE(last_sale.last_unit_price, 0) as last_unit_price, `
       + `COALESCE(total_stock.total_quantity, 0) as total_stock, `
       + `COALESCE(prices.purchase_cost, 0) as purchase_cost, `
@@ -392,7 +409,7 @@ app.get('/api/products', authMiddleware, async (req, res) => {
 app.put('/api/products/:id', upload.single('image'), authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, manufacturer, product_code } = req.body;
+    const { name, manufacturer, product_code, notification_threshold } = req.body;
     
     // Обрабатываем изображение - может быть как URL, так и загруженный файл
     let image = null;
@@ -412,16 +429,36 @@ app.put('/api/products/:id', upload.single('image'), authMiddleware, async (req,
       }
     }
 
-    const [result] = await db.execute(
-      'UPDATE products SET name = ?, manufacturer = ?, product_code = ?, image = ? WHERE id = ?',
-      [name, manufacturer || null, product_code || null, image, id]
-    );
+    // Check if product_code already exists for a different product
+    if (product_code) {
+      const [existingProduct] = await db.execute(
+        'SELECT id FROM products WHERE product_code = ? AND id != ?',
+        [product_code, id]
+      );
+      
+      if (existingProduct.length > 0) {
+        return res.status(400).json({ error: 'Product code must be unique' });
+      }
+    }
+    
+    // Prepare the update query based on whether notification_threshold is provided
+    let updateQuery = 'UPDATE products SET name = ?, manufacturer = ?, product_code = ?, image = ?';
+    let queryParams = [name, manufacturer || null, product_code || null, image, id];
+    
+    if (notification_threshold !== undefined) {
+      updateQuery += ', notification_threshold = ?';
+      queryParams = [name, manufacturer || null, product_code || null, image, parseInt(notification_threshold, 10), id];
+    } else {
+      queryParams = [name, manufacturer || null, product_code || null, image, id];
+    }
+    
+    const [result] = await db.execute(updateQuery + ' WHERE id = ?', queryParams);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    const [updatedProduct] = await db.execute('SELECT id, name, manufacturer, product_code, image, created_at FROM products WHERE id = ?', [id]);
+    const [updatedProduct] = await db.execute('SELECT id, name, manufacturer, product_code, image, notification_threshold, created_at FROM products WHERE id = ?', [id]);
     
     res.json({
       ...updatedProduct[0],
@@ -429,6 +466,10 @@ app.put('/api/products/:id', upload.single('image'), authMiddleware, async (req,
     });
   } catch (error) {
     console.error('Update product error:', error);
+    // Handle duplicate entry error specifically
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({ error: 'Product code must be unique' });
+    }
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -489,6 +530,29 @@ app.delete('/api/products/:id', authMiddleware, async (req, res) => {
     });
   } catch (error) {
     console.error('Delete product error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/products/missing
+app.get('/api/products/missing', authMiddleware, async (req, res) => {
+  try {
+    // Get all products with their notification thresholds and total stock across all warehouses
+    const [rows] = await db.execute(
+      `SELECT p.id, p.name, p.manufacturer, p.product_code, p.image, p.notification_threshold, COALESCE(total_stock.total_quantity, 0) as total_stock
+       FROM products p
+       LEFT JOIN (
+         SELECT product_id, SUM(total_pieces) as total_quantity
+         FROM warehouse_stock
+         GROUP BY product_id
+       ) total_stock ON p.id = total_stock.product_id
+       WHERE COALESCE(total_stock.total_quantity, 0) < p.notification_threshold
+       ORDER BY p.name`
+    );
+
+    res.json(rows);
+  } catch (error) {
+    console.error('Get missing products error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -953,7 +1017,7 @@ app.get('/api/warehouses/:id/products', authMiddleware, async (req, res) => {
     
     // Get products in the specified warehouse
     const [rows] = await db.execute(
-      'SELECT ws.id, ws.product_id, p.name as product_name, p.manufacturer, p.image, '
+      'SELECT ws.id, ws.product_id, p.name as product_name, p.manufacturer, p.image, p.product_code, '
       + 'ws.total_pieces, ws.weight_kg, ws.volume_cbm, ws.updated_at '
       + 'FROM warehouse_stock ws '
       + 'JOIN products p ON ws.product_id = p.id '
@@ -1004,7 +1068,7 @@ app.get('/api/warehouses/:warehouseId/products/:productId', authMiddleware, asyn
     
     // Verify product exists
     const [product] = await db.execute(
-      'SELECT id, name, manufacturer, image, created_at FROM products WHERE id = ?',
+      'SELECT id, name, manufacturer, image, product_code, created_at FROM products WHERE id = ?',
       [productId]
     );
     if (product.length === 0) {
@@ -1171,8 +1235,8 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
       
       // Log the supplier operation for this receipt
       await connection.execute(
-        'INSERT INTO supplier_operations (supplier_id, warehouse_id, sum, type) VALUES (?, ?, ?, ?)',
-        [supplier_id, warehouse_id, total_amount, 'RECEIPT']
+        'INSERT INTO supplier_operations (supplier_id, warehouse_id, receipt_id, sum, type) VALUES (?, ?, ?, ?, ?)',
+        [supplier_id, warehouse_id, receiptId, total_amount, 'RECEIPT']
       );
               
       // Commit transaction
@@ -1228,7 +1292,7 @@ app.get('/api/suppliers/:supplierId/operations', authMiddleware, async (req, res
 
     // Build query based on filters
     let query = `SELECT so.id, so.supplier_id, s.name as supplier_name, so.warehouse_id, 
-                    w.name as warehouse_name, so.sum, so.type, so.date
+                    w.name as warehouse_name, so.receipt_id, so.sum, so.type, so.date
              FROM supplier_operations so
              LEFT JOIN suppliers s ON so.supplier_id = s.id
              LEFT JOIN warehouses w ON so.warehouse_id = w.id
@@ -1324,7 +1388,7 @@ app.get('/api/inventory/receipt/:id', authMiddleware, async (req, res) => {
 
     // Get receipt items
     const [itemRows] = await db.execute(
-      'SELECT sri.id, sri.product_id, p.name as product_name, p.manufacturer, p.image, sri.boxes_qty, sri.pieces_per_box, sri.loose_pieces, sri.total_pieces, '
+      'SELECT sri.id, sri.product_id, p.name as product_name, p.manufacturer, p.image, p.product_code, sri.boxes_qty, sri.pieces_per_box, sri.loose_pieces, sri.total_pieces, '
       + 'sri.weight_kg, sri.volume_cbm, sri.amount, sri.purchase_cost, sri.selling_price '
       + 'FROM stock_receipt_items sri '
       + 'JOIN products p ON sri.product_id = p.id '
@@ -1342,12 +1406,56 @@ app.get('/api/inventory/receipt/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/stock-receipt-items
+app.get('/api/stock-receipt-items', authMiddleware, async (req, res) => {
+  try {
+    const { receipt_id, supplier_id, warehouse_id } = req.query;
+
+    // Build query based on provided filters
+    let query = 'SELECT sri.*, p.name as product_name, p.manufacturer, p.image, p.product_code ';
+    query += 'FROM stock_receipt_items sri ';
+    query += 'JOIN stock_receipts sr ON sri.receipt_id = sr.id ';
+    query += 'JOIN products p ON sri.product_id = p.id ';
+
+    const queryParams = [];
+    let whereConditions = [];
+
+    if (receipt_id) {
+      whereConditions.push('sri.receipt_id = ?');
+      queryParams.push(receipt_id);
+    }
+
+    if (supplier_id) {
+      whereConditions.push('sr.supplier_id = ?');
+      queryParams.push(supplier_id);
+    }
+
+    if (warehouse_id) {
+      whereConditions.push('sr.warehouse_id = ?');
+      queryParams.push(warehouse_id);
+    }
+
+    if (whereConditions.length > 0) {
+      query += 'WHERE ' + whereConditions.join(' AND ');
+    }
+
+    query += ' ORDER BY sri.id DESC';
+
+    const [rows] = await db.execute(query, queryParams);
+
+    res.json(rows);
+  } catch (error) {
+    console.error('Get stock receipt items error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // GET /api/warehouse/stock
 app.get('/api/warehouse/stock', authMiddleware, async (req, res) => {
   try {
     // Get warehouse stock with purchase and selling prices
     const [rows] = await db.execute(
-      `SELECT ws.id, ws.warehouse_id, w.name as warehouse_name, ws.product_id, p.name as product_name,
+      `SELECT ws.id, ws.warehouse_id, w.name as warehouse_name, ws.product_id, p.name as product_name, p.product_code,
               ws.total_pieces, ws.weight_kg, ws.volume_cbm, ws.updated_at
        FROM warehouse_stock ws
        JOIN warehouses w ON ws.warehouse_id = w.id
@@ -1581,7 +1689,7 @@ app.post('/api/warehouse/stock/move', authMiddleware, async (req, res) => {
 app.get('/api/stock/history', authMiddleware, async (req, res) => {
   try {
     const [rows] = await db.execute(
-      'SELECT sc.id, sc.warehouse_id, w.name as warehouse_name, sc.product_id, p.name as product_name, '
+      'SELECT sc.id, sc.warehouse_id, w.name as warehouse_name, sc.product_id, p.name as product_name, p.product_code, '
       + 'p.manufacturer, p.image, sc.user_id, u.login as user_name, sc.change_type, '
       + 'sc.old_total_pieces, sc.new_total_pieces, '
       + 'sc.old_weight_kg, sc.new_weight_kg, sc.old_volume_cbm, sc.new_volume_cbm, '
@@ -1606,7 +1714,7 @@ app.get('/api/stock/history/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
 
     const [rows] = await db.execute(
-      'SELECT sc.id, sc.warehouse_id, w.name as warehouse_name, sc.product_id, p.name as product_name, '
+      'SELECT sc.id, sc.warehouse_id, w.name as warehouse_name, sc.product_id, p.name as product_name, p.product_code, '
       + 'p.manufacturer, p.image, sc.user_id, u.login as user_name, sc.change_type, '
       + 'sc.old_total_pieces, sc.new_total_pieces, '
       + 'sc.old_weight_kg, sc.new_weight_kg, sc.old_volume_cbm, sc.new_volume_cbm, '
@@ -2115,7 +2223,7 @@ app.get('/api/sales/:id', authMiddleware, async (req, res) => {
 
     // Get sale items
     const [itemRows] = await db.execute(
-      'SELECT si.id, si.product_id, p.name as product_name, p.manufacturer, p.image, si.quantity, '
+      'SELECT si.id, si.product_id, p.name as product_name, p.manufacturer, p.image, p.product_code, si.quantity, '
       + 'si.unit_price, si.total_price '
       + 'FROM sale_items si '
       + 'JOIN products p ON si.product_id = p.id '
@@ -2372,7 +2480,7 @@ app.get('/api/returns/:id', authMiddleware, async (req, res) => {
 
     // Get return items
     const [itemRows] = await db.execute(
-      'SELECT ri.id, ri.product_id, p.name as product_name, p.manufacturer, p.image, ri.quantity, '
+      'SELECT ri.id, ri.product_id, p.name as product_name, p.manufacturer, p.image, p.product_code, ri.quantity, '
       + 'ri.unit_price, ri.total_price '
       + 'FROM return_items ri '
       + 'JOIN products p ON ri.product_id = p.id '
