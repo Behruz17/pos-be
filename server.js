@@ -2,7 +2,7 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const db = require('./db');
-const authMiddleware = require('./middleware');
+const { authMiddleware, authorizeStoreAccess } = require('./middleware');
 const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
@@ -164,11 +164,24 @@ app.post('/api/auth/register', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Only administrators can create new users' });
     }
 
-    const { login, password, name, role = 'USER' } = req.body;
+    const { login, password, name, role = 'USER', store_id } = req.body;
 
     // Validate required fields
     if (!login || !password) {
       return res.status(400).json({ error: 'Login and password are required' });
+    }
+
+    // For USER role, store_id is required
+    if (role === 'USER' && !store_id) {
+      return res.status(400).json({ error: 'Store ID is required for regular users' });
+    }
+
+    // Validate that store exists (if provided)
+    if (store_id) {
+      const [store] = await db.execute('SELECT id FROM stores WHERE id = ?', [store_id]);
+      if (store.length === 0) {
+        return res.status(400).json({ error: 'Store not found' });
+      }
     }
 
     // Check if user already exists
@@ -183,13 +196,13 @@ app.post('/api/auth/register', authMiddleware, async (req, res) => {
     
     // Create user
     const [result] = await db.execute(
-      'INSERT INTO users (login, name, role, password_hash) VALUES (?, ?, ?, ?)',
-      [login, name || null, role, hashedPassword]
+      'INSERT INTO users (login, name, role, password_hash, store_id) VALUES (?, ?, ?, ?, ?)',
+      [login, name || null, role, hashedPassword, store_id || null]
     );
     
     // Get the newly created user with created_at
     const [newUser] = await db.execute(
-      'SELECT id, login, name, role, created_at FROM users WHERE id = ?',
+      'SELECT id, login, name, role, store_id, created_at FROM users WHERE id = ?',
       [result.insertId]
     );
 
@@ -211,7 +224,7 @@ app.get('/api/users', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Only administrators can view user list' });
     }
 
-    const [rows] = await db.execute('SELECT id, login, name, role, created_at FROM users ORDER BY created_at DESC');
+    const [rows] = await db.execute('SELECT id, login, name, role, store_id, created_at FROM users ORDER BY created_at DESC');
     
     res.json(rows);
   } catch (error) {
@@ -1761,7 +1774,7 @@ app.get('/api/stock/history/:id', authMiddleware, async (req, res) => {
 // Customer Management Routes
 
 // POST /api/customers
-app.post('/api/customers', authMiddleware, async (req, res) => {
+app.post('/api/customers', authMiddleware, authorizeStoreAccess(false), async (req, res) => {
   try {
     const { full_name, phone, city, store_id } = req.body;
 
@@ -1769,19 +1782,27 @@ app.post('/api/customers', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Full name is required' });
     }
 
-    if (!store_id) {
-      return res.status(400).json({ error: 'Store ID is required' });
+    let actualStoreId = store_id;
+    
+    // For regular users, override store_id to their assigned store
+    if (req.user.role !== 'ADMIN') {
+      actualStoreId = req.userStoreId;
+    } else {
+      // For admins, store_id is required in request
+      if (!store_id) {
+        return res.status(400).json({ error: 'Store ID is required' });
+      }
     }
 
     // Validate that store exists
-    const [store] = await db.execute('SELECT id FROM stores WHERE id = ?', [store_id]);
+    const [store] = await db.execute('SELECT id FROM stores WHERE id = ?', [actualStoreId]);
     if (store.length === 0) {
       return res.status(400).json({ error: 'Store not found' });
     }
 
     const [result] = await db.execute(
       'INSERT INTO customers (full_name, phone, city, store_id) VALUES (?, ?, ?, ?)',
-      [full_name, phone || null, city || null, store_id || null]
+      [full_name, phone || null, city || null, actualStoreId]
     );
 
     res.status(201).json({
@@ -1789,7 +1810,7 @@ app.post('/api/customers', authMiddleware, async (req, res) => {
       full_name,
       phone,
       city,
-      store_id: store_id || null,
+      store_id: actualStoreId,
       balance: 0,
       message: 'Customer created successfully'
     });
@@ -1800,9 +1821,21 @@ app.post('/api/customers', authMiddleware, async (req, res) => {
 });
 
 // GET /api/customers
-app.get('/api/customers', authMiddleware, async (req, res) => {
+app.get('/api/customers', authMiddleware, authorizeStoreAccess(true), async (req, res) => {
   try {
-    const [rows] = await db.execute('SELECT id, full_name, phone, city, store_id, balance, created_at, updated_at FROM customers ORDER BY created_at DESC');
+    let query;
+    let params = [];
+    
+    if (req.user.role === 'ADMIN') {
+      // Admins see all customers
+      query = 'SELECT id, full_name, phone, city, store_id, balance, created_at, updated_at FROM customers ORDER BY created_at DESC';
+    } else {
+      // Regular users see only customers from their store
+      query = 'SELECT id, full_name, phone, city, store_id, balance, created_at, updated_at FROM customers WHERE store_id = ? ORDER BY created_at DESC';
+      params = [req.userStoreId];
+    }
+    
+    const [rows] = await db.execute(query, params);
     res.json(rows);
   } catch (error) {
     console.error('Get customers error:', error);
@@ -2134,6 +2167,198 @@ app.post('/api/customers/:id/payment', authMiddleware, async (req, res) => {
     }
   } catch (error) {
     console.error('Record customer payment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/retail-debtors
+app.get('/api/retail-debtors', authMiddleware, async (req, res) => {
+  try {
+    const [debtors] = await db.execute(`
+      SELECT 
+        rd.id,
+        rd.customer_name,
+        rd.phone,
+        rd.created_at,
+        SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) as total_debt,
+        SUM(CASE WHEN ro.type = 'PAYMENT' THEN ro.amount ELSE 0 END) as total_paid,
+        (SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) - 
+         SUM(CASE WHEN ro.type = 'PAYMENT' THEN ro.amount ELSE 0 END)) as remaining_balance
+      FROM retail_debtors rd
+      LEFT JOIN retail_operations ro ON rd.id = ro.retail_debtor_id
+      GROUP BY rd.id, rd.customer_name, rd.phone, rd.created_at
+      HAVING remaining_balance > 0
+      ORDER BY remaining_balance DESC
+    `);
+    
+    res.json(debtors);
+  } catch (error) {
+    console.error('Get retail debtors error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/retail-debtors
+app.post('/api/retail-debtors', authMiddleware, async (req, res) => {
+  try {
+    const { customer_name, phone, sale_id, amount } = req.body;
+    
+    // Валидация
+    if (!customer_name || !sale_id || !amount) {
+      return res.status(400).json({ error: 'Customer name, sale_id and amount are required' });
+    }
+    
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+    
+    try {
+      // Создаем должника
+      const [debtorResult] = await connection.execute(
+        'INSERT INTO retail_debtors (customer_name, phone) VALUES (?, ?)',
+        [customer_name, phone || null]
+      );
+      
+      const debtorId = debtorResult.insertId;
+      
+      // Создаем операцию долга
+      await connection.execute(
+        'INSERT INTO retail_operations (retail_debtor_id, sale_id, amount, type) VALUES (?, ?, ?, ?)',
+        [debtorId, sale_id, amount, 'DEBT']
+      );
+      
+      await connection.commit();
+      connection.release();
+      
+      res.status(201).json({
+        id: debtorId,
+        customer_name,
+        phone,
+        message: 'Retail debtor created successfully'
+      });
+    } catch (error) {
+      await connection.rollback();
+      connection.release();
+      throw error;
+    }
+  } catch (error) {
+    console.error('Create retail debtor error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/retail-debtors/:id
+app.get('/api/retail-debtors/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const [debtor] = await db.execute(`
+      SELECT 
+        rd.id,
+        rd.customer_name,
+        rd.phone,
+        rd.created_at,
+        SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) as total_debt,
+        SUM(CASE WHEN ro.type = 'PAYMENT' THEN ro.amount ELSE 0 END) as total_paid,
+        (SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) - 
+         SUM(CASE WHEN ro.type = 'PAYMENT' THEN ro.amount ELSE 0 END)) as remaining_balance
+      FROM retail_debtors rd
+      LEFT JOIN retail_operations ro ON rd.id = ro.retail_debtor_id
+      WHERE rd.id = ?
+      GROUP BY rd.id, rd.customer_name, rd.phone, rd.created_at
+    `, [id]);
+    
+    if (debtor.length === 0) {
+      return res.status(404).json({ error: 'Retail debtor not found' });
+    }
+    
+    // Получаем историю операций
+    const [operations] = await db.execute(`
+      SELECT 
+        ro.id,
+        ro.type,
+        ro.amount,
+        ro.description,
+        ro.created_at,
+        s.id as sale_id,
+        s.total_amount as sale_amount
+      FROM retail_operations ro
+      LEFT JOIN sales s ON ro.sale_id = s.id
+      WHERE ro.retail_debtor_id = ?
+      ORDER BY ro.created_at DESC
+    `, [id]);
+    
+    res.json({
+      ...debtor[0],
+      operations
+    });
+  } catch (error) {
+    console.error('Get retail debtor error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/retail-debtors/:id/payments
+app.post('/api/retail-debtors/:id/payments', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amount, description } = req.body;
+    
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Valid amount is required' });
+    }
+    
+    // Проверяем существует ли должник
+    const [debtor] = await db.execute(
+      'SELECT id FROM retail_debtors WHERE id = ?', [id]
+    );
+    
+    if (debtor.length === 0) {
+      return res.status(404).json({ error: 'Retail debtor not found' });
+    }
+    
+    // Создаем операцию оплаты
+    const [result] = await db.execute(
+      'INSERT INTO retail_operations (retail_debtor_id, amount, type, description) VALUES (?, ?, ?, ?)',
+      [id, amount, 'PAYMENT', description || null]
+    );
+    
+    res.status(201).json({
+      id: result.insertId,
+      retail_debtor_id: id,
+      amount,
+      type: 'PAYMENT',
+      description,
+      message: 'Payment recorded successfully'
+    });
+  } catch (error) {
+    console.error('Record retail payment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/retail-debtors/:id/operations
+app.get('/api/retail-debtors/:id/operations', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const [operations] = await db.execute(`
+      SELECT 
+        ro.id,
+        ro.type,
+        ro.amount,
+        ro.description,
+        ro.created_at,
+        s.id as sale_id,
+        s.total_amount as sale_amount
+      FROM retail_operations ro
+      LEFT JOIN sales s ON ro.sale_id = s.id
+      WHERE ro.retail_debtor_id = ?
+      ORDER BY ro.created_at DESC
+    `, [id]);
+    
+    res.json(operations);
+  } catch (error) {
+    console.error('Get retail operations error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
