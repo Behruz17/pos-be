@@ -67,7 +67,7 @@ CREATE TABLE `customer_operations` (
   `customer_id` int NOT NULL,
   `store_id` int DEFAULT NULL,
   `sum` decimal(10,2) NOT NULL,
-  `type` enum('PAID','DEBT') NOT NULL,
+  `type` enum('PAID','DEBT','PAYMENT') NOT NULL,
   `date` timestamp NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3;
 

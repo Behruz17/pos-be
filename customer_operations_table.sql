@@ -4,7 +4,7 @@ CREATE TABLE customer_operations (
     customer_id INT NOT NULL,
     store_id INT,
     sum DECIMAL(10,2) NOT NULL,
-    type ENUM('PAID','DEBT') NOT NULL,
+    type ENUM('PAID','DEBT','PAYMENT') NOT NULL,
     date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     INDEX idx_customer_id (customer_id),
