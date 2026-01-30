@@ -148,7 +148,8 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
       id: req.user.id,
       login: req.user.login,
       name: req.user.name,
-      role: req.user.role
+      role: req.user.role,
+      store_id: req.user.store_id
     });
   } catch (error) {
     console.error('Get user error:', error);

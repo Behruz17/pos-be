@@ -1268,36 +1268,32 @@
 - **Постоянные клиенты**: Если `customer_id` указан - используется стандартная логика работы с таблицей `customers`
 
 ### GET /api/sales
-**Назначение:** Получение списка всех **розничных** продаж (customer_id IS NULL)  
+**Назначение:** Получение списка всех **розничных** продаж и **оплат по долгам**  
 **Заголовки:**
 - `Authorization: Bearer <токен>`
 **Параметры запроса (опционально):**
-- `day` - День месяца (1-31)
-- `month` - Номер месяца (например, 1 для января, 12 для декабря)
-- `year` - Год (например, 2023)
 - `store_id` - ID магазина для фильтрации
 **Примеры использования:**
-- `/api/sales` - все **розничные** продажи (customer_id IS NULL)
-- `/api/sales?year=2023` - **розничные** продажи за 2023 год
-- `/api/sales?month=12&year=2023` - **розничные** продажи за декабрь 2023 года
-- `/api/sales?day=15&month=12&year=2023` - **розничные** продажи за 15 декабря 2023 года
-- `/api/sales?store_id=1` - **розничные** продажи для магазина с ID 1
-- `/api/sales?day=15&month=12&year=2023&store_id=1` - **розничные** продажи за 15 декабря 2023 года для магазина с ID 1
+- `/api/sales` - все **розничные** продажи и оплаты по долгам
+- `/api/sales?store_id=1` - операции для магазина с ID 1
 **Ответ:**
 ```json
 [
   {
-    "id": 1,
-    "customer_id": null,
-    "total_amount": 1000.00,
-    "payment_status": "DEBT",
+    "type": "SALE",           // SALE или PAYMENT
+    "transaction_id": 1,      // ID продажи или операции
+    "retail_debtor_id": null, // ID должника (только для PAYMENT)
+    "amount": 1000.00,
+    "payment_status": "DEBT", // DEBT, PAID или PAID (для оплат)
+    "created_at": "2023-01-01T00:00:00.000Z",
     "created_by": 1,
     "created_by_name": "admin",
-    "created_at": "2023-01-01T00:00:00.000Z",
     "store_id": 1,
-    "warehouse_id": 1,
     "store_name": "Название магазина",
-    "warehouse_name": "Название склада"
+    "warehouse_id": 1,
+    "warehouse_name": "Название склада",
+    "customer_name": null,   // Имя клиента (только для PAYMENT)
+    "phone": null            // Телефон (только для PAYMENT)
   }
 ]
 ```
