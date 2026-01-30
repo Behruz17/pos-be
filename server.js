@@ -2538,16 +2538,16 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
     
     const storeWarehouseId = store[0].warehouse_id;
 
-    // Get demo customer if no customer is provided
+    // Handle retail customer logic
     let customerId = customer_id;
-    if (!customerId) {
-      const [demoCustomer] = await db.execute('SELECT id FROM customers WHERE full_name = ?', ['Demo Customer']);
-      if (demoCustomer.length > 0) {
-        customerId = demoCustomer[0].id;
-      } else {
-        return res.status(500).json({ error: 'Demo customer not found' });
-      }
+    let isRetailDebt = false;
+    
+    if (!customerId && payment_status === 'DEBT') {
+      // This is a retail customer taking debt - we'll create retail debtor record
+      isRetailDebt = true;
+      // Customer ID remains NULL for retail debt sales
     }
+    // For regular retail cash sales, customer_id remains NULL
 
     // Start transaction
     const connection = await db.getConnection();
@@ -2558,9 +2558,10 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
       const total_amount = items.reduce((sum, item) => sum + (parseFloat(item.unit_price) * parseInt(item.quantity)), 0);
 
       // Create sale with store_id, warehouse_id, and payment_status
+      // customer_id can be NULL for retail sales
       const [saleResult] = await connection.execute(
         'INSERT INTO sales (customer_id, store_id, warehouse_id, total_amount, payment_status, created_by) VALUES (?, ?, ?, ?, ?, ?)',
-        [customerId, store_id, storeWarehouseId, total_amount, payment_status, req.user.id]
+        [customerId || null, store_id, storeWarehouseId, total_amount, payment_status, req.user.id]
       );
       const saleId = saleResult.insertId;
 
@@ -2611,8 +2612,47 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
         }
       }
 
+      // Handle retail debt creation if needed
+      if (isRetailDebt) {
+        const { customer_name, phone } = req.body;
+        
+        if (!customer_name) {
+          await connection.rollback();
+          connection.release();
+          return res.status(400).json({ error: 'Customer name is required for retail debt sales' });
+        }
+        
+        // Create retail debtor
+        const [debtorResult] = await connection.execute(
+          'INSERT INTO retail_debtors (customer_name, phone) VALUES (?, ?)',
+          [customer_name, phone || null]
+        );
+        
+        const debtorId = debtorResult.insertId;
+        
+        // Create retail operation for the debt
+        await connection.execute(
+          'INSERT INTO retail_operations (retail_debtor_id, sale_id, amount, type) VALUES (?, ?, ?, ?)',
+          [debtorId, saleId, total_amount, 'DEBT']
+        );
+        
+        // Commit transaction
+        await connection.commit();
+        connection.release();
+        
+        return res.status(201).json({
+          id: saleId,
+          retail_debtor_id: debtorId,
+          customer_name: customer_name,
+          phone: phone || null,
+          amount: total_amount,
+          message: 'Sale created successfully with retail debt record'
+        });
+      }
+      
       // Update customer balance based on payment status and log the operation
-      if (payment_status === 'DEBT') {
+      // Only for registered customers (not retail)
+      if (!isRetailDebt && payment_status === 'DEBT') {
         // If it's debt, decrease customer balance (they owe money)
         await connection.execute(
           'UPDATE customers SET balance = balance - ? WHERE id = ?',
@@ -2624,8 +2664,9 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
           'INSERT INTO customer_operations (customer_id, store_id, sale_id, sum, type) VALUES (?, ?, ?, ?, ?)',
           [customerId, store_id, saleId, total_amount, 'DEBT']
         );
-      } else {
+      } else if (!isRetailDebt) {
         // If it's paid, don't change the balance (assuming payment was made separately)
+        // Only for registered customers
         // Log the paid operation
         await connection.execute(
           'INSERT INTO customer_operations (customer_id, store_id, sale_id, sum, type) VALUES (?, ?, ?, ?, ?)',
@@ -2633,7 +2674,7 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
         );
       }
 
-      // Commit transaction
+      // Commit transaction for regular sales
       await connection.commit();
       connection.release();
 
@@ -2655,45 +2696,74 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
 // GET /api/sales
 app.get('/api/sales', authMiddleware, async (req, res) => {
   try {
-    const { month, year, store_id } = req.query;
+    const { day, month, year, store_id } = req.query;
     
-    let query = `SELECT s.id, s.customer_id, c.full_name as customer_name, s.total_amount, s.payment_status, s.created_by, 
-                        u.login as created_by_name, s.created_at, s.store_id, s.warehouse_id, st.name as store_name, w.name as warehouse_name
-                 FROM sales s
-                 LEFT JOIN customers c ON s.customer_id = c.id
-                 LEFT JOIN stores st ON s.store_id = st.id
-                 LEFT JOIN warehouses w ON s.warehouse_id = w.id
-                 JOIN users u ON s.created_by = u.id`;
+    // Return retail sales + debt payments
+    // This combines:
+    // 1. Retail sales (customer_id IS NULL)
+    // 2. Debt payment operations from retail_operations
+    
+    let baseQuery = `
+      SELECT 
+        'SALE' as type,
+        s.id as transaction_id,
+        NULL as retail_debtor_id,
+        s.total_amount as amount,
+        s.payment_status,
+        s.created_at,
+        s.created_by,
+        u.login as created_by_name,
+        s.store_id,
+        st.name as store_name,
+        s.warehouse_id,
+        w.name as warehouse_name,
+        NULL as customer_name,
+        NULL as phone
+      FROM sales s
+      LEFT JOIN stores st ON s.store_id = st.id
+      LEFT JOIN warehouses w ON s.warehouse_id = w.id
+      JOIN users u ON s.created_by = u.id
+      WHERE s.customer_id IS NULL
+      
+      UNION ALL
+      
+      SELECT 
+        'PAYMENT' as type,
+        ro.id as transaction_id,
+        ro.retail_debtor_id,
+        ro.amount,
+        'PAID' as payment_status,
+        ro.created_at,
+        NULL as created_by,
+        NULL as created_by_name,
+        rd.id as store_id,  -- Using debtor ID as store_id placeholder
+        NULL as store_name,
+        NULL as warehouse_id,
+        NULL as warehouse_name,
+        rd.customer_name,
+        rd.phone
+      FROM retail_operations ro
+      JOIN retail_debtors rd ON ro.retail_debtor_id = rd.id
+      WHERE ro.type = 'PAYMENT'
+    `;
     
     const params = [];
     let conditions = [];
     
-    // Add date filtering if month and/or year are provided
-    if (month && year) {
-      // Both month and year provided
-      const dateCondition = 'DATE_FORMAT(s.created_at, "%Y-%m") = ?';
-      conditions.push(dateCondition);
-      params.push(`${year}-${String(month).padStart(2, '0')}`);
-    } else if (year) {
-      // Only year provided
-      const dateCondition = 'YEAR(s.created_at) = ?';
-      conditions.push(dateCondition);
-      params.push(parseInt(year, 10));
-    } else if (month) {
-      // Only month provided - this doesn't make sense without year, so we'll ignore
-    }
-    
-    // Add store filtering if store_id is provided
+    // Add store filtering
     if (store_id) {
-      conditions.push('s.store_id = ?');
+      conditions.push('store_id = ?');
       params.push(store_id);
     }
+    
+    // Build final query with conditions
+    let query = baseQuery;
     
     if (conditions.length > 0) {
       query += ' WHERE ' + conditions.join(' AND ');
     }
     
-    query += ' ORDER BY s.created_at DESC';
+    query += ' ORDER BY created_at DESC';
 
     const [rows] = await db.execute(query, params);
 
