@@ -24,7 +24,7 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ 
+const upload = multer({
   storage: storage,
   fileFilter: (req, file, cb) => {
     // Разрешаем только изображения
@@ -84,7 +84,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     // Find user by login
     const [users] = await db.execute('SELECT id, login, name, role, password_hash FROM users WHERE login = ?', [login]);
-    
+
     if (users.length === 0) {
       return res.status(401).json({ error: 'Invalid login or password' });
     }
@@ -93,7 +93,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     // Verify password
     const isValidPassword = await bcrypt.compare(password, user.password_hash);
-    
+
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Invalid login or password' });
     }
@@ -101,14 +101,14 @@ app.post('/api/auth/login', async (req, res) => {
     // Check if token already exists for this user
     let token;
     const [existingTokens] = await db.execute('SELECT token FROM tokens WHERE user_id = ?', [user.id]);
-    
+
     if (existingTokens.length > 0) {
       // Return existing token (as per requirement: don't change if already exists)
       token = existingTokens[0].token;
     } else {
       // Generate new token
       token = generateToken();
-      
+
       // Save token to database
       await db.execute('INSERT INTO tokens (user_id, token) VALUES (?, ?)', [user.id, token]);
     }
@@ -133,7 +133,7 @@ app.post('/api/auth/logout', authMiddleware, async (req, res) => {
   try {
     // Delete token from database
     await db.execute('DELETE FROM tokens WHERE user_id = ?', [req.user.id]);
-    
+
     res.json({ message: 'ok' });
   } catch (error) {
     console.error('Logout error:', error);
@@ -187,20 +187,20 @@ app.post('/api/auth/register', authMiddleware, async (req, res) => {
 
     // Check if user already exists
     const [existingUsers] = await db.execute('SELECT id FROM users WHERE login = ?', [login]);
-    
+
     if (existingUsers.length > 0) {
       return res.status(400).json({ error: 'User with this login already exists' });
     }
 
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
-    
+
     // Create user
     const [result] = await db.execute(
       'INSERT INTO users (login, name, role, password_hash, store_id) VALUES (?, ?, ?, ?, ?)',
       [login, name || null, role, hashedPassword, store_id || null]
     );
-    
+
     // Get the newly created user with created_at
     const [newUser] = await db.execute(
       'SELECT id, login, name, role, store_id, created_at FROM users WHERE id = ?',
@@ -226,7 +226,7 @@ app.get('/api/users', authMiddleware, async (req, res) => {
     }
 
     const [rows] = await db.execute('SELECT id, login, name, role, store_id, created_at FROM users ORDER BY created_at DESC');
-    
+
     res.json(rows);
   } catch (error) {
     console.error('Get users error:', error);
@@ -283,7 +283,7 @@ app.put('/api/users/:id', authMiddleware, async (req, res) => {
     }
 
     const [updatedUser] = await db.execute('SELECT id, login, name, role, created_at FROM users WHERE id = ?', [id]);
-    
+
     res.json({
       ...updatedUser[0],
       message: 'User updated successfully'
@@ -341,11 +341,11 @@ app.post('/api/products', upload.single('image'), authMiddleware, async (req, re
     if (!name) {
       return res.status(400).json({ error: 'Product name is required' });
     }
-    
+
     if (!product_code) {
       return res.status(400).json({ error: 'Product code is required' });
     }
-    
+
     // Set default notification threshold to 10 if not provided
     const threshold = notification_threshold !== undefined ? parseInt(notification_threshold, 10) : 10;
 
@@ -354,7 +354,7 @@ app.post('/api/products', upload.single('image'), authMiddleware, async (req, re
       'SELECT id FROM products WHERE product_code = ?',
       [product_code]
     );
-    
+
     if (existingProduct.length > 0) {
       return res.status(400).json({ error: 'Product code must be unique' });
     }
@@ -394,21 +394,21 @@ app.get('/api/products', authMiddleware, async (req, res) => {
       + `COALESCE(prices.selling_price, 0) as selling_price `
       + `FROM products p `
       + `LEFT JOIN (`
-      +   `SELECT si.product_id, si.unit_price as last_unit_price, `
-      +   `ROW_NUMBER() OVER (PARTITION BY si.product_id ORDER BY s.created_at DESC) as rn `
-      +   `FROM sale_items si `
-      +   `JOIN sales s ON si.sale_id = s.id `
+      + `SELECT si.product_id, si.unit_price as last_unit_price, `
+      + `ROW_NUMBER() OVER (PARTITION BY si.product_id ORDER BY s.created_at DESC) as rn `
+      + `FROM sale_items si `
+      + `JOIN sales s ON si.sale_id = s.id `
       + `) last_sale ON p.id = last_sale.product_id AND last_sale.rn = 1 `
       + `LEFT JOIN (`
-      +   `SELECT product_id, SUM(total_pieces) as total_quantity `
-      +   `FROM warehouse_stock `
-      +   `GROUP BY product_id `
+      + `SELECT product_id, SUM(total_pieces) as total_quantity `
+      + `FROM warehouse_stock `
+      + `GROUP BY product_id `
       + `) total_stock ON p.id = total_stock.product_id `
       + `LEFT JOIN (`
-      +   `SELECT sri.product_id, sri.purchase_cost, sri.selling_price, `
-      +   `ROW_NUMBER() OVER (PARTITION BY sri.product_id ORDER BY sr.created_at DESC) as rn `
-      +   `FROM stock_receipt_items sri `
-      +   `JOIN stock_receipts sr ON sri.receipt_id = sr.id `
+      + `SELECT sri.product_id, sri.purchase_cost, sri.selling_price, `
+      + `ROW_NUMBER() OVER (PARTITION BY sri.product_id ORDER BY sr.created_at DESC) as rn `
+      + `FROM stock_receipt_items sri `
+      + `JOIN stock_receipts sr ON sri.receipt_id = sr.id `
       + `) prices ON p.id = prices.product_id AND prices.rn = 1 `
       + `ORDER BY p.created_at DESC`
     );
@@ -424,7 +424,7 @@ app.put('/api/products/:id', upload.single('image'), authMiddleware, async (req,
   try {
     const { id } = req.params;
     const { name, manufacturer, product_code, notification_threshold } = req.body;
-    
+
     // Обрабатываем изображение - может быть как URL, так и загруженный файл
     let image = null;
     if (req.file) {
@@ -434,7 +434,7 @@ app.put('/api/products/:id', upload.single('image'), authMiddleware, async (req,
       // Если передан URL в body, используем его
       image = req.body.image;
     }
-    
+
     // Получаем текущее изображение, если не передано новое
     if (image === null) {
       const [currentProduct] = await db.execute('SELECT image FROM products WHERE id = ?', [id]);
@@ -449,23 +449,23 @@ app.put('/api/products/:id', upload.single('image'), authMiddleware, async (req,
         'SELECT id FROM products WHERE product_code = ? AND id != ?',
         [product_code, id]
       );
-      
+
       if (existingProduct.length > 0) {
         return res.status(400).json({ error: 'Product code must be unique' });
       }
     }
-    
+
     // Prepare the update query based on whether notification_threshold is provided
     let updateQuery = 'UPDATE products SET name = ?, manufacturer = ?, product_code = ?, image = ?';
     let queryParams = [name, manufacturer || null, product_code || null, image, id];
-    
+
     if (notification_threshold !== undefined) {
       updateQuery += ', notification_threshold = ?';
       queryParams = [name, manufacturer || null, product_code || null, image, parseInt(notification_threshold, 10), id];
     } else {
       queryParams = [name, manufacturer || null, product_code || null, image, id];
     }
-    
+
     const [result] = await db.execute(updateQuery + ' WHERE id = ?', queryParams);
 
     if (result.affectedRows === 0) {
@@ -473,7 +473,7 @@ app.put('/api/products/:id', upload.single('image'), authMiddleware, async (req,
     }
 
     const [updatedProduct] = await db.execute('SELECT id, name, manufacturer, product_code, image, notification_threshold, created_at FROM products WHERE id = ?', [id]);
-    
+
     res.json({
       ...updatedProduct[0],
       message: 'Product updated successfully'
@@ -492,53 +492,53 @@ app.put('/api/products/:id', upload.single('image'), authMiddleware, async (req,
 app.delete('/api/products/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // Check if product exists
     const [existingProduct] = await db.execute('SELECT id FROM products WHERE id = ?', [id]);
-    
+
     if (existingProduct.length === 0) {
       return res.status(404).json({ error: 'Product not found' });
     }
-    
+
     // Check if product is used in any warehouse stock
     const [stockCheck] = await db.execute('SELECT COUNT(*) as count FROM warehouse_stock WHERE product_id = ?', [id]);
-    
+
     if (stockCheck[0].count > 0) {
-      return res.status(400).json({ 
-        error: 'Cannot delete product that is currently in stock. Please remove from all warehouses first.' 
+      return res.status(400).json({
+        error: 'Cannot delete product that is currently in stock. Please remove from all warehouses first.'
       });
     }
-    
+
     // Check if product is used in any stock receipt items
     const [receiptCheck] = await db.execute('SELECT COUNT(*) as count FROM stock_receipt_items WHERE product_id = ?', [id]);
-    
+
     if (receiptCheck[0].count > 0) {
-      return res.status(400).json({ 
-        error: 'Cannot delete product that has been used in inventory receipts.' 
+      return res.status(400).json({
+        error: 'Cannot delete product that has been used in inventory receipts.'
       });
     }
-    
+
     // Check if product is used in any sale items
     const [saleCheck] = await db.execute('SELECT COUNT(*) as count FROM sale_items WHERE product_id = ?', [id]);
-    
+
     if (saleCheck[0].count > 0) {
-      return res.status(400).json({ 
-        error: 'Cannot delete product that has been sold.' 
+      return res.status(400).json({
+        error: 'Cannot delete product that has been sold.'
       });
     }
-    
+
     // Check if product is used in any return items
     const [returnCheck] = await db.execute('SELECT COUNT(*) as count FROM return_items WHERE product_id = ?', [id]);
-    
+
     if (returnCheck[0].count > 0) {
-      return res.status(400).json({ 
-        error: 'Cannot delete product that has been returned.' 
+      return res.status(400).json({
+        error: 'Cannot delete product that has been returned.'
       });
     }
-    
+
     // Delete the product
     await db.execute('DELETE FROM products WHERE id = ?', [id]);
-    
+
     res.json({
       message: 'Product deleted successfully'
     });
@@ -620,16 +620,16 @@ app.put('/api/warehouses/:id', authMiddleware, async (req, res) => {
 
     // Check if warehouse exists
     const [existingWarehouse] = await db.execute('SELECT id FROM warehouses WHERE id = ?', [id]);
-    
+
     if (existingWarehouse.length === 0) {
       return res.status(404).json({ error: 'Warehouse not found' });
     }
-    
+
     // If setting as default, unset other defaults
     if (is_default) {
       await db.execute('UPDATE warehouses SET is_default = 0');
     }
-    
+
     // If setting as main, unset other main flags
     if (is_main) {
       await db.execute('UPDATE warehouses SET is_main = 0');
@@ -638,22 +638,22 @@ app.put('/api/warehouses/:id', authMiddleware, async (req, res) => {
     // Prepare update parameters
     let updateQuery = 'UPDATE warehouses SET name = ?';
     let queryParams = [name];
-    
+
     if (city !== undefined) {
       updateQuery += ', city = ?';
       queryParams.push(city || null);
     }
-    
+
     if (is_default !== undefined) {
       updateQuery += ', is_default = ?';
       queryParams.push(is_default ? 1 : 0);
     }
-    
+
     if (is_main !== undefined) {
       updateQuery += ', is_main = ?';
       queryParams.push(is_main ? 1 : 0);
     }
-    
+
     updateQuery += ' WHERE id = ?';
     queryParams.push(id);
 
@@ -665,7 +665,7 @@ app.put('/api/warehouses/:id', authMiddleware, async (req, res) => {
     }
 
     const [updatedWarehouse] = await db.execute('SELECT id, name, city, is_default, is_main FROM warehouses WHERE id = ?', [id]);
-    
+
     res.json({
       ...updatedWarehouse[0],
       message: 'Warehouse updated successfully'
@@ -687,11 +687,11 @@ app.post('/api/suppliers', authMiddleware, async (req, res) => {
     if (!name) {
       return res.status(400).json({ error: 'Supplier name is required' });
     }
-    
+
     if (!warehouse_id) {
       return res.status(400).json({ error: 'Warehouse ID is required' });
     }
-    
+
     // Validate that warehouse exists
     const [warehouse] = await db.execute('SELECT id FROM warehouses WHERE id = ?', [warehouse_id]);
     if (warehouse.length === 0) {
@@ -762,11 +762,11 @@ app.put('/api/suppliers/:id', authMiddleware, async (req, res) => {
     if (!name) {
       return res.status(400).json({ error: 'Supplier name is required' });
     }
-    
+
     if (!warehouse_id) {
       return res.status(400).json({ error: 'Warehouse ID is required' });
     }
-    
+
     // Validate that warehouse exists
     const [warehouse] = await db.execute('SELECT id FROM warehouses WHERE id = ?', [warehouse_id]);
     if (warehouse.length === 0) {
@@ -775,7 +775,7 @@ app.put('/api/suppliers/:id', authMiddleware, async (req, res) => {
 
     // Check if supplier exists
     const [existingSupplier] = await db.execute('SELECT id FROM suppliers WHERE id = ?', [id]);
-    
+
     if (existingSupplier.length === 0) {
       return res.status(404).json({ error: 'Supplier not found' });
     }
@@ -793,7 +793,7 @@ app.put('/api/suppliers/:id', authMiddleware, async (req, res) => {
       'SELECT id, name, phone, balance, status, warehouse_id, created_at, updated_at FROM suppliers WHERE id = ?',
       [id]
     );
-    
+
     res.json({
       ...updatedSupplier[0],
       message: 'Supplier updated successfully'
@@ -817,7 +817,7 @@ app.post('/api/suppliers/:id/payment', authMiddleware, async (req, res) => {
 
     // Check if supplier exists
     const [existingSupplier] = await db.execute('SELECT id, balance FROM suppliers WHERE id = ? AND status = 1', [id]);
-    
+
     if (existingSupplier.length === 0) {
       return res.status(404).json({ error: 'Supplier not found' });
     }
@@ -831,17 +831,17 @@ app.post('/api/suppliers/:id/payment', authMiddleware, async (req, res) => {
       }
       warehouseId = warehouse_id;
     }
-    
+
     // Update supplier balance (decrease it since payment reduces debt)
     const newBalance = parseFloat(existingSupplier[0].balance) - parseFloat(amount);
     await db.execute('UPDATE suppliers SET balance = ? WHERE id = ?', [newBalance, id]);
-    
+
     // Record the payment operation
     const [result] = await db.execute(
       'INSERT INTO supplier_operations (supplier_id, warehouse_id, sum, type) VALUES (?, ?, ?, ?)',
       [id, warehouseId, amount, 'PAYMENT']
     );
-    
+
     res.json({
       operation_id: result.insertId,
       supplier_id: id,
@@ -859,17 +859,17 @@ app.post('/api/suppliers/:id/payment', authMiddleware, async (req, res) => {
 app.delete('/api/suppliers/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // Check if supplier exists
     const [existingSupplier] = await db.execute('SELECT id FROM suppliers WHERE id = ?', [id]);
-    
+
     if (existingSupplier.length === 0) {
       return res.status(404).json({ error: 'Supplier not found' });
     }
-    
+
     // Soft delete by setting status to 0
     await db.execute('UPDATE suppliers SET status = 0 WHERE id = ?', [id]);
-    
+
     res.json({
       message: 'Supplier deleted successfully'
     });
@@ -883,26 +883,26 @@ app.delete('/api/suppliers/:id', authMiddleware, async (req, res) => {
 app.delete('/api/warehouses/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // Check if warehouse exists
     const [existingWarehouse] = await db.execute('SELECT id FROM warehouses WHERE id = ?', [id]);
-    
+
     if (existingWarehouse.length === 0) {
       return res.status(404).json({ error: 'Warehouse not found' });
     }
-    
+
     // Check if warehouse has any stock
     const [stockCheck] = await db.execute('SELECT COUNT(*) as count FROM warehouse_stock WHERE warehouse_id = ?', [id]);
-    
+
     if (stockCheck[0].count > 0) {
-      return res.status(400).json({ 
-        error: 'Cannot delete warehouse with existing stock. Please transfer or remove all products first.' 
+      return res.status(400).json({
+        error: 'Cannot delete warehouse with existing stock. Please transfer or remove all products first.'
       });
     }
-    
+
     // Delete the warehouse
     await db.execute('DELETE FROM warehouses WHERE id = ?', [id]);
-    
+
     res.json({
       message: 'Warehouse deleted successfully'
     });
@@ -1004,7 +1004,7 @@ app.put('/api/stores/:id', authMiddleware, async (req, res) => {
       'WHERE s.id = ?',
       [id]
     );
-    
+
     res.json({
       ...updatedStore[0],
       message: 'Store updated successfully'
@@ -1019,17 +1019,17 @@ app.put('/api/stores/:id', authMiddleware, async (req, res) => {
 app.delete('/api/stores/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // Check if store exists
     const [existingStore] = await db.execute('SELECT id FROM stores WHERE id = ?', [id]);
-    
+
     if (existingStore.length === 0) {
       return res.status(404).json({ error: 'Store not found' });
     }
-    
+
     // Soft delete by setting is_active to 0
     await db.execute('UPDATE stores SET is_active = 0 WHERE id = ?', [id]);
-    
+
     res.json({
       message: 'Store deleted successfully'
     });
@@ -1043,43 +1043,32 @@ app.delete('/api/stores/:id', authMiddleware, async (req, res) => {
 app.get('/api/warehouses/:id/products', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // Verify warehouse exists
     const [warehouse] = await db.execute('SELECT id, name FROM warehouses WHERE id = ?', [id]);
     if (warehouse.length === 0) {
       return res.status(404).json({ error: 'Warehouse not found' });
     }
-    
-    // Get products in the specified warehouse
+
+    // Get products in the specified warehouse with their latest prices
     const [rows] = await db.execute(
-      'SELECT ws.id, ws.product_id, p.name as product_name, p.manufacturer, p.image, p.product_code, '
-      + 'ws.total_pieces, ws.weight_kg, ws.volume_cbm, ws.updated_at '
-      + 'FROM warehouse_stock ws '
-      + 'JOIN products p ON ws.product_id = p.id '
-      + 'WHERE ws.warehouse_id = ? '
-      + 'ORDER BY p.name',
+      `SELECT ws.id, ws.product_id, p.name as product_name, p.manufacturer, p.image, p.product_code, 
+      ws.total_pieces, ws.weight_kg, ws.volume_cbm, ws.updated_at,
+      COALESCE(prices.purchase_cost, 0) as purchase_cost,
+      COALESCE(prices.selling_price, 0) as selling_price
+      FROM warehouse_stock ws
+      JOIN products p ON ws.product_id = p.id
+      LEFT JOIN (
+        SELECT sri.product_id, sri.purchase_cost, sri.selling_price,
+        ROW_NUMBER() OVER (PARTITION BY sri.product_id ORDER BY sr.created_at DESC) as rn
+        FROM stock_receipt_items sri
+        JOIN stock_receipts sr ON sri.receipt_id = sr.id
+      ) prices ON ws.product_id = prices.product_id AND prices.rn = 1
+      WHERE ws.warehouse_id = ?
+      ORDER BY p.name`,
       [id]
     );
-    
-    // Add purchase and selling prices for each item
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      
-      // Get the most recent purchase and selling prices for this product from stock receipts
-      const [priceRows] = await db.execute(
-        `SELECT sri.purchase_cost, sri.selling_price 
-        FROM stock_receipt_items sri 
-        JOIN stock_receipts sr ON sri.receipt_id = sr.id 
-        WHERE sri.product_id = ? 
-        ORDER BY sr.created_at DESC 
-        LIMIT 1`,
-        [row.product_id]
-      );
-      
-      row.purchase_cost = priceRows.length > 0 ? priceRows[0].purchase_cost : 0;
-      row.selling_price = priceRows.length > 0 ? priceRows[0].selling_price : 0;
-    }
-    
+
     res.json({
       warehouse: warehouse[0],
       products: rows
@@ -1094,13 +1083,13 @@ app.get('/api/warehouses/:id/products', authMiddleware, async (req, res) => {
 app.get('/api/warehouses/:warehouseId/products/:productId', authMiddleware, async (req, res) => {
   try {
     const { warehouseId, productId } = req.params;
-    
+
     // Verify warehouse exists
     const [warehouse] = await db.execute('SELECT id, name FROM warehouses WHERE id = ?', [warehouseId]);
     if (warehouse.length === 0) {
       return res.status(404).json({ error: 'Warehouse not found' });
     }
-    
+
     // Verify product exists
     const [product] = await db.execute(
       'SELECT id, name, manufacturer, image, product_code, created_at FROM products WHERE id = ?',
@@ -1109,7 +1098,7 @@ app.get('/api/warehouses/:warehouseId/products/:productId', authMiddleware, asyn
     if (product.length === 0) {
       return res.status(404).json({ error: 'Product not found' });
     }
-    
+
     // Get product stock in the specified warehouse
     const [stock] = await db.execute(
       'SELECT ws.id, ws.total_pieces, ws.weight_kg, ws.volume_cbm, ws.updated_at '
@@ -1117,11 +1106,11 @@ app.get('/api/warehouses/:warehouseId/products/:productId', authMiddleware, asyn
       + 'WHERE ws.warehouse_id = ? AND ws.product_id = ?',
       [warehouseId, productId]
     );
-    
+
     if (stock.length === 0) {
       return res.status(404).json({ error: 'Product not found in this warehouse' });
     }
-    
+
     res.json({
       warehouse: warehouse[0],
       product: product[0],
@@ -1147,7 +1136,7 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
     if (!supplier_id) {
       return res.status(400).json({ error: 'Supplier ID is required' });
     }
-    
+
     const [supplier] = await db.execute('SELECT id FROM suppliers WHERE id = ? AND status = 1', [supplier_id]);
     if (supplier.length === 0) {
       return res.status(400).json({ error: 'Supplier not found or inactive' });
@@ -1179,7 +1168,7 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
       for (const item of items) {
         // Calculate total pieces
         const total_pieces = (item.boxes_qty * item.pieces_per_box) + item.loose_pieces;
-        
+
         // Insert receipt item
         await connection.execute(
           'INSERT INTO stock_receipt_items (receipt_id, product_id, boxes_qty, weight_kg, volume_cbm, amount, purchase_cost, selling_price, pieces_per_box, loose_pieces, total_pieces) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -1209,7 +1198,7 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
           const oldTotalPieces = existingStock[0].total_pieces;
           const oldWeight = existingStock[0].weight_kg;
           const oldVolume = existingStock[0].volume_cbm;
-          
+
           const addedTotalPieces = (item.boxes_qty * item.pieces_per_box) + item.loose_pieces;
           const updatedTotalPieces = oldTotalPieces + addedTotalPieces;
           const updatedWeight = oldWeight ? (parseFloat(oldWeight) + parseFloat(item.weight_kg || 0)) : (item.weight_kg || 0);
@@ -1219,7 +1208,7 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
             'UPDATE warehouse_stock SET total_pieces = ?, weight_kg = ?, volume_cbm = ?, updated_at = NOW() WHERE id = ?',
             [updatedTotalPieces, updatedWeight, updatedVolume, existingStock[0].id]
           );
-          
+
           // Record the IN change for stock history
           await connection.execute(
             `INSERT INTO stock_changes 
@@ -1243,7 +1232,7 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
             'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces, weight_kg, volume_cbm) VALUES (?, ?, ?, ?, ?)',
             [warehouse_id, item.product_id, totalPieces, item.weight_kg || 0, item.volume_cbm || 0]
           );
-          
+
           // Record the IN change for stock history (new item)
           await connection.execute(
             `INSERT INTO stock_changes 
@@ -1267,17 +1256,17 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
       const [currentSupplier] = await connection.execute('SELECT balance FROM suppliers WHERE id = ?', [supplier_id]);
       const newBalance = parseFloat(currentSupplier[0].balance) + parseFloat(total_amount);
       await connection.execute('UPDATE suppliers SET balance = ? WHERE id = ?', [newBalance, supplier_id]);
-      
+
       // Log the supplier operation for this receipt
       await connection.execute(
         'INSERT INTO supplier_operations (supplier_id, warehouse_id, receipt_id, sum, type) VALUES (?, ?, ?, ?, ?)',
         [supplier_id, warehouse_id, receiptId, total_amount, 'RECEIPT']
       );
-              
+
       // Commit transaction
       await connection.commit();
       connection.release();
-      
+
       res.status(201).json({
         id: receiptId,
         message: 'Inventory receipt added successfully'
@@ -1332,29 +1321,29 @@ app.get('/api/suppliers/:supplierId/operations', authMiddleware, async (req, res
              LEFT JOIN suppliers s ON so.supplier_id = s.id
              LEFT JOIN warehouses w ON so.warehouse_id = w.id
              WHERE so.supplier_id = ?`;
-    
+
     const queryParams = [supplierId];
-    
+
     // Add warehouse filter if provided
     if (warehouseId) {
       query += ' AND so.warehouse_id = ?';
       queryParams.push(warehouseId);
     }
-    
+
     // Add type filter if provided
     if (type) {
       query += ' AND so.type = ?';
       queryParams.push(type);
     }
-    
+
     query += ' ORDER BY so.date DESC';
-    
+
     // Add limit if provided
     if (limit) {
       query += ' LIMIT ?';
       queryParams.push(parseInt(limit));
     }
-    
+
     const [operations] = await db.execute(query, queryParams);
 
     res.json({
@@ -1496,11 +1485,11 @@ app.get('/api/warehouse/stock', authMiddleware, async (req, res) => {
        JOIN products p ON ws.product_id = p.id
        ORDER BY w.name, p.name`
     );
-    
+
     // Add purchase and selling prices for each item
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
-      
+
       // Get the most recent purchase and selling prices for this product from stock receipts
       const [priceRows] = await db.execute(
         `SELECT sri.purchase_cost, sri.selling_price 
@@ -1511,7 +1500,7 @@ app.get('/api/warehouse/stock', authMiddleware, async (req, res) => {
         LIMIT 1`,
         [row.product_id]
       );
-      
+
       row.purchase_cost = priceRows.length > 0 ? priceRows[0].purchase_cost : 0;
       row.selling_price = priceRows.length > 0 ? priceRows[0].selling_price : 0;
     }
@@ -1607,17 +1596,17 @@ app.post('/api/warehouse/stock/move', authMiddleware, async (req, res) => {
         connection.release();
         return res.status(400).json({ error: 'Not enough stock in source warehouse' });
       }
-      
+
       // Check if we have enough weight and volume to subtract
       const subtractWeight = parseFloat(weight_kg || 0);
       const subtractVolume = parseFloat(volume_cbm || 0);
-      
+
       if (stock.current_weight != null && subtractWeight > parseFloat(stock.current_weight || 0)) {
         await connection.rollback();
         connection.release();
         return res.status(400).json({ error: 'Not enough weight in source warehouse' });
       }
-      
+
       if (stock.current_volume != null && subtractVolume > parseFloat(stock.current_volume || 0)) {
         await connection.rollback();
         connection.release();
@@ -1677,14 +1666,14 @@ app.post('/api/warehouse/stock/move', authMiddleware, async (req, res) => {
       const toOldPieces = toStock.length > 0 ? toStock[0].current_total_pieces : 0;
       const toOldWeight = toStock.length > 0 ? (parseFloat(toStock[0].current_weight) || 0) : 0;
       const toOldVolume = toStock.length > 0 ? (parseFloat(toStock[0].current_volume) || 0) : 0;
-      
+
       const addWeight = parseFloat(weight_kg || 0);
       const addVolume = parseFloat(volume_cbm || 0);
-      
+
       const toNewPieces = toOldPieces + qty;
       const toNewWeight = toOldWeight + addWeight;
       const toNewVolume = toOldVolume + addVolume;
-      
+
       await connection.execute(
         `INSERT INTO stock_changes 
          (warehouse_id, product_id, user_id, change_type,
@@ -1784,7 +1773,7 @@ app.post('/api/customers', authMiddleware, authorizeStoreAccess(false), async (r
     }
 
     let actualStoreId = store_id;
-    
+
     // For regular users, override store_id to their assigned store
     if (req.user.role !== 'ADMIN') {
       actualStoreId = req.userStoreId;
@@ -1826,7 +1815,7 @@ app.get('/api/customers', authMiddleware, authorizeStoreAccess(true), async (req
   try {
     let query;
     let params = [];
-    
+
     if (req.user.role === 'ADMIN') {
       // Admins see all customers
       query = 'SELECT id, full_name, phone, city, store_id, balance, created_at, updated_at FROM customers ORDER BY created_at DESC';
@@ -1835,7 +1824,7 @@ app.get('/api/customers', authMiddleware, authorizeStoreAccess(true), async (req
       query = 'SELECT id, full_name, phone, city, store_id, balance, created_at, updated_at FROM customers WHERE store_id = ? ORDER BY created_at DESC';
       params = [req.userStoreId];
     }
-    
+
     const [rows] = await db.execute(query, params);
     res.json(rows);
   } catch (error) {
@@ -1892,7 +1881,7 @@ app.put('/api/customers/:id', authMiddleware, async (req, res) => {
     }
 
     const [updatedCustomer] = await db.execute('SELECT id, full_name, phone, city, store_id, balance, created_at, updated_at FROM customers WHERE id = ?', [id]);
-    
+
     res.json({
       ...updatedCustomer[0],
       message: 'Customer updated successfully'
@@ -2191,7 +2180,7 @@ app.get('/api/retail-debtors', authMiddleware, async (req, res) => {
       HAVING remaining_balance > 0
       ORDER BY remaining_balance DESC
     `);
-    
+
     res.json(debtors);
   } catch (error) {
     console.error('Get retail debtors error:', error);
@@ -2203,33 +2192,33 @@ app.get('/api/retail-debtors', authMiddleware, async (req, res) => {
 app.post('/api/retail-debtors', authMiddleware, async (req, res) => {
   try {
     const { customer_name, phone, sale_id, amount } = req.body;
-    
+
     // Валидация
     if (!customer_name || !sale_id || !amount) {
       return res.status(400).json({ error: 'Customer name, sale_id and amount are required' });
     }
-    
+
     const connection = await db.getConnection();
     await connection.beginTransaction();
-    
+
     try {
       // Создаем должника
       const [debtorResult] = await connection.execute(
         'INSERT INTO retail_debtors (customer_name, phone) VALUES (?, ?)',
         [customer_name, phone || null]
       );
-      
+
       const debtorId = debtorResult.insertId;
-      
+
       // Создаем операцию долга
       await connection.execute(
         'INSERT INTO retail_operations (retail_debtor_id, sale_id, amount, type) VALUES (?, ?, ?, ?)',
         [debtorId, sale_id, amount, 'DEBT']
       );
-      
+
       await connection.commit();
       connection.release();
-      
+
       res.status(201).json({
         id: debtorId,
         customer_name,
@@ -2251,7 +2240,7 @@ app.post('/api/retail-debtors', authMiddleware, async (req, res) => {
 app.get('/api/retail-debtors/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const [debtor] = await db.execute(`
       SELECT 
         rd.id,
@@ -2267,11 +2256,11 @@ app.get('/api/retail-debtors/:id', authMiddleware, async (req, res) => {
       WHERE rd.id = ?
       GROUP BY rd.id, rd.customer_name, rd.phone, rd.created_at
     `, [id]);
-    
+
     if (debtor.length === 0) {
       return res.status(404).json({ error: 'Retail debtor not found' });
     }
-    
+
     // Получаем историю операций
     const [operations] = await db.execute(`
       SELECT 
@@ -2287,7 +2276,7 @@ app.get('/api/retail-debtors/:id', authMiddleware, async (req, res) => {
       WHERE ro.retail_debtor_id = ?
       ORDER BY ro.created_at DESC
     `, [id]);
-    
+
     res.json({
       ...debtor[0],
       operations
@@ -2303,26 +2292,26 @@ app.post('/api/retail-debtors/:id/payments', authMiddleware, async (req, res) =>
   try {
     const { id } = req.params;
     const { amount, description } = req.body;
-    
+
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: 'Valid amount is required' });
     }
-    
+
     // Проверяем существует ли должник
     const [debtor] = await db.execute(
       'SELECT id FROM retail_debtors WHERE id = ?', [id]
     );
-    
+
     if (debtor.length === 0) {
       return res.status(404).json({ error: 'Retail debtor not found' });
     }
-    
+
     // Создаем операцию оплаты
     const [result] = await db.execute(
       'INSERT INTO retail_operations (retail_debtor_id, amount, type, description) VALUES (?, ?, ?, ?)',
       [id, amount, 'PAYMENT', description || null]
     );
-    
+
     res.status(201).json({
       id: result.insertId,
       retail_debtor_id: id,
@@ -2341,7 +2330,7 @@ app.post('/api/retail-debtors/:id/payments', authMiddleware, async (req, res) =>
 app.get('/api/retail-debtors/:id/operations', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const [operations] = await db.execute(`
       SELECT 
         ro.id,
@@ -2356,7 +2345,7 @@ app.get('/api/retail-debtors/:id/operations', authMiddleware, async (req, res) =
       WHERE ro.retail_debtor_id = ?
       ORDER BY ro.created_at DESC
     `, [id]);
-    
+
     res.json(operations);
   } catch (error) {
     console.error('Get retail operations error:', error);
@@ -2422,28 +2411,28 @@ app.get('/api/customers/:customerId/operations', authMiddleware, async (req, res
         LEFT JOIN stores s ON r.store_id = s.id
       ) as operations
     `;
-    
+
     const queryParams = [];
     const conditions = [];
-    
+
     // Add customer filter if provided
     if (customerId && customerId !== 'undefined' && customerId !== 'null') {
       conditions.push('customer_id = ?');
       queryParams.push(customerId);
     }
-    
+
     // Add store filter if provided
     if (store_id) {
       conditions.push('store_id = ?');
       queryParams.push(store_id);
     }
-    
+
     // Add type filter if provided
     if (type) {
       conditions.push('type = ?');
       queryParams.push(type);
     }
-    
+
     // Add date filtering if month and/or year are provided
     if (month && year) {
       conditions.push('(MONTH(date) = ? AND YEAR(date) = ?)');
@@ -2455,25 +2444,25 @@ app.get('/api/customers/:customerId/operations', authMiddleware, async (req, res
       conditions.push('YEAR(date) = ?');
       queryParams.push(parseInt(year));
     }
-    
+
     // Add WHERE clause if there are conditions
     if (conditions.length > 0) {
       query += ' WHERE ' + conditions.join(' AND ');
     }
-    
+
     query += ' ORDER BY date DESC';
-    
+
     const [operations] = await db.execute(query, queryParams);
-    
+
     const response = {
       operations: operations
     };
-    
+
     // Include customer info only if specific customer was requested
     if (customer) {
       response.customer = customer;
     }
-    
+
     // Include store info if store_id was specified
     if (store_id) {
       const [storeResult] = await db.execute('SELECT id, name FROM stores WHERE id = ?', [store_id]);
@@ -2481,7 +2470,7 @@ app.get('/api/customers/:customerId/operations', authMiddleware, async (req, res
         response.store = storeResult[0];
       }
     }
-    
+
     res.json(response);
   } catch (error) {
     console.error('Get customer operations error:', error);
@@ -2501,7 +2490,7 @@ app.post('/api/customers/:id/update-balance', authMiddleware, async (req, res) =
 
     // Get current balance
     const [currentCustomer] = await db.execute('SELECT balance FROM customers WHERE id = ?', [id]);
-    
+
     if (currentCustomer.length === 0) {
       return res.status(404).json({ error: 'Customer not found' });
     }
@@ -2540,7 +2529,7 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
     if (!store_id) {
       return res.status(400).json({ error: 'Store ID is required' });
     }
-    
+
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Items array is required' });
     }
@@ -2562,17 +2551,17 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
       'SELECT id, warehouse_id FROM stores WHERE id = ? AND is_active = 1',
       [store_id]
     );
-    
+
     if (store.length === 0) {
       return res.status(400).json({ error: 'Store not found or inactive' });
     }
-    
+
     const storeWarehouseId = store[0].warehouse_id;
 
     // Handle retail customer logic
     let customerId = customer_id;
     let isRetailDebt = false;
-    
+
     if (!customerId && payment_status === 'DEBT') {
       // This is a retail customer taking debt - we'll create retail debtor record
       isRetailDebt = true;
@@ -2599,21 +2588,21 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
       // Process each item in the sale
       for (const item of items) {
         const totalPrice = parseFloat(item.unit_price) * parseInt(item.quantity);
-        
+
         // Verify product exists before inserting sale item
         const [productCheck] = await connection.execute(
           'SELECT id FROM products WHERE id = ?',
           [item.product_id]
         );
-        
+
         if (productCheck.length === 0) {
           await connection.rollback();
           connection.release();
-          return res.status(400).json({ 
-            error: `Product with ID ${item.product_id} not found` 
+          return res.status(400).json({
+            error: `Product with ID ${item.product_id} not found`
           });
         }
-        
+
         // Insert sale item
         await connection.execute(
           'INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)',
@@ -2629,20 +2618,20 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
         if (stockRows.length > 0) {
           const stockRow = stockRows[0];
           const requestedQuantity = parseInt(item.quantity);
-          
+
           // Check if we have enough stock in this specific warehouse
           if (requestedQuantity > stockRow.total_pieces) {
             // Not enough stock
             await connection.rollback();
             connection.release();
-            return res.status(400).json({ 
-              error: `Not enough stock for product ID: ${item.product_id} in store warehouse. Requested: ${requestedQuantity}, Available: ${stockRow.total_pieces}` 
+            return res.status(400).json({
+              error: `Not enough stock for product ID: ${item.product_id} in store warehouse. Requested: ${requestedQuantity}, Available: ${stockRow.total_pieces}`
             });
           }
-          
+
           // Deduct from this warehouse only
           const newTotalPieces = stockRow.total_pieces - requestedQuantity;
-          
+
           await connection.execute(
             'UPDATE warehouse_stock SET total_pieces = ? WHERE id = ?',
             [newTotalPieces, stockRow.id]
@@ -2651,8 +2640,8 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
           // No stock found for this product in this warehouse
           await connection.rollback();
           connection.release();
-          return res.status(400).json({ 
-            error: `Not enough stock for product ID: ${item.product_id} in store warehouse` 
+          return res.status(400).json({
+            error: `Not enough stock for product ID: ${item.product_id} in store warehouse`
           });
         }
       }
@@ -2660,31 +2649,31 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
       // Handle retail debt creation if needed
       if (isRetailDebt) {
         const { customer_name, phone } = req.body;
-        
+
         if (!customer_name) {
           await connection.rollback();
           connection.release();
           return res.status(400).json({ error: 'Customer name is required for retail debt sales' });
         }
-        
+
         // Create retail debtor
         const [debtorResult] = await connection.execute(
           'INSERT INTO retail_debtors (customer_name, phone) VALUES (?, ?)',
           [customer_name, phone || null]
         );
-        
+
         const debtorId = debtorResult.insertId;
-        
+
         // Create retail operation for the debt
         await connection.execute(
           'INSERT INTO retail_operations (retail_debtor_id, sale_id, amount, type) VALUES (?, ?, ?, ?)',
           [debtorId, saleId, total_amount, 'DEBT']
         );
-        
+
         // Commit transaction
         await connection.commit();
         connection.release();
-        
+
         return res.status(201).json({
           id: saleId,
           retail_debtor_id: debtorId,
@@ -2694,7 +2683,7 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
           message: 'Sale created successfully with retail debt record'
         });
       }
-      
+
       // Update customer balance based on payment status and log the operation
       // Only for registered customers (not retail)
       if (!isRetailDebt && customerId && payment_status === 'DEBT') {
@@ -2703,7 +2692,7 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
           'UPDATE customers SET balance = balance - ? WHERE id = ?',
           [total_amount, customerId]
         );
-        
+
         // Log the debt operation
         await connection.execute(
           'INSERT INTO customer_operations (customer_id, store_id, sale_id, sum, type) VALUES (?, ?, ?, ?, ?)',
@@ -2742,16 +2731,16 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
 app.get('/api/sales', authMiddleware, async (req, res) => {
   try {
     const { day, month, year, store_id } = req.query;
-    
+
     // Return retail sales + debt payments + retail cash returns
     // This combines:
     // 1. Retail sales (customer_id IS NULL)
     // 2. Debt payment/return operations from retail_operations
     // 3. Retail cash returns (customer_id IS NULL AND retail_debtor_id IS NULL)
-    
+
     let dateCondition = '';
     let dateConditions = [];
-    
+
     if (day && month && year) {
       const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
       dateCondition = ` AND DATE(created_at) = '${dateStr}'`;
@@ -2763,11 +2752,11 @@ app.get('/api/sales', authMiddleware, async (req, res) => {
       dateCondition = ` AND YEAR(created_at) = ${parseInt(year)}`;
       dateConditions = [parseInt(year), parseInt(year), parseInt(year)];
     }
-    
+
     let storeCondition = store_id ? ` AND s.store_id = ${parseInt(store_id)}` : '';
     let storeConditionDebtor = store_id ? ` AND rd.id = ${parseInt(store_id)}` : '';
     let storeConditionReturn = store_id ? ` AND r.store_id = ${parseInt(store_id)}` : '';
-    
+
     let query = `
       SELECT * FROM (
         SELECT 
@@ -2900,11 +2889,11 @@ app.post('/api/returns/client', authMiddleware, async (req, res) => {
     if (!customer_id) {
       return res.status(400).json({ error: 'customer_id is required for client returns' });
     }
-    
+
     if (!store_id) {
       return res.status(400).json({ error: 'store_id is required for client returns' });
     }
-    
+
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Items array is required' });
     }
@@ -2915,25 +2904,25 @@ app.post('/api/returns/client', authMiddleware, async (req, res) => {
         return res.status(400).json({ error: 'Each item must have product_id, quantity, and unit_price' });
       }
     }
-    
+
     const customerId = customer_id;
-    
+
     // Validate that customer exists
     const [customer] = await db.execute('SELECT id FROM customers WHERE id = ?', [customerId]);
     if (customer.length === 0) {
       return res.status(400).json({ error: 'Customer not found' });
     }
-    
+
     // Validate that store exists and get warehouse
     const [store] = await db.execute(
       'SELECT warehouse_id FROM stores WHERE id = ? AND is_active = 1',
       [store_id]
     );
-    
+
     if (store.length === 0) {
       return res.status(400).json({ error: 'Store not found or inactive' });
     }
-    
+
     const returnWarehouseId = store[0].warehouse_id;
 
     // Start transaction
@@ -2950,35 +2939,35 @@ app.post('/api/returns/client', authMiddleware, async (req, res) => {
         [customerId, total_amount, req.user.id, returnWarehouseId, store_id || null]
       );
       const returnId = returnResult.insertId;
-      
+
       // Process each item in the return
       for (const item of items) {
         const totalPrice = parseFloat(item.unit_price) * parseInt(item.quantity);
-        
+
         // Insert return item
         await connection.execute(
           'INSERT INTO return_items (return_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)',
           [returnId, item.product_id, item.quantity, item.unit_price, totalPrice]
         );
-        
+
         // Update warehouse stock (add back the returned items) to the determined warehouse
         const [stockRows] = await connection.execute(
           'SELECT id, total_pieces FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
           [returnWarehouseId, item.product_id]
         );
-        
+
         const addQty = parseInt(item.quantity, 10);
-        
+
         if (stockRows.length > 0) {
           const currentStock = stockRows[0];
           const oldTotalPieces = currentStock.total_pieces;
           const newTotalPieces = oldTotalPieces + addQty;
-          
+
           await connection.execute(
             'UPDATE warehouse_stock SET total_pieces = ?, updated_at = NOW() WHERE id = ?',
             [newTotalPieces, currentStock.id]
           );
-          
+
           // Record the IN change for return
           await connection.execute(
             `INSERT INTO stock_changes 
@@ -2998,7 +2987,7 @@ app.post('/api/returns/client', authMiddleware, async (req, res) => {
             'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces, weight_kg, volume_cbm) VALUES (?, ?, ?, 0, 0)',
             [returnWarehouseId, item.product_id, addQty]
           );
-          
+
           // Record the IN change for return (new item)
           await connection.execute(
             `INSERT INTO stock_changes 
@@ -3050,7 +3039,7 @@ app.post('/api/returns/retail-cash', authMiddleware, async (req, res) => {
     if (!store_id) {
       return res.status(400).json({ error: 'store_id is required for retail cash returns' });
     }
-    
+
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Items array is required' });
     }
@@ -3061,17 +3050,17 @@ app.post('/api/returns/retail-cash', authMiddleware, async (req, res) => {
         return res.status(400).json({ error: 'Each item must have product_id, quantity, and unit_price' });
       }
     }
-    
+
     // Validate that store exists
     const [store] = await db.execute(
       'SELECT id, warehouse_id FROM stores WHERE id = ? AND is_active = 1',
       [store_id]
     );
-    
+
     if (store.length === 0) {
       return res.status(400).json({ error: 'Store not found or inactive' });
     }
-    
+
     const returnWarehouseId = store[0].warehouse_id;
 
     // Start transaction
@@ -3088,35 +3077,35 @@ app.post('/api/returns/retail-cash', authMiddleware, async (req, res) => {
         [total_amount, req.user.id, returnWarehouseId, store_id]
       );
       const returnId = returnResult.insertId;
-      
+
       // Process each item in the return
       for (const item of items) {
         const totalPrice = parseFloat(item.unit_price) * parseInt(item.quantity);
-        
+
         // Insert return item
         await connection.execute(
           'INSERT INTO return_items (return_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)',
           [returnId, item.product_id, item.quantity, item.unit_price, totalPrice]
         );
-        
+
         // Update warehouse stock (add back the returned items)
         const [stockRows] = await connection.execute(
           'SELECT id, total_pieces FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
           [returnWarehouseId, item.product_id]
         );
-        
+
         const addQty = parseInt(item.quantity, 10);
-        
+
         if (stockRows.length > 0) {
           const currentStock = stockRows[0];
           const oldTotalPieces = currentStock.total_pieces;
           const newTotalPieces = oldTotalPieces + addQty;
-          
+
           await connection.execute(
             'UPDATE warehouse_stock SET total_pieces = ?, updated_at = NOW() WHERE id = ?',
             [newTotalPieces, currentStock.id]
           );
-          
+
           // Record the IN change for return
           await connection.execute(
             `INSERT INTO stock_changes 
@@ -3136,7 +3125,7 @@ app.post('/api/returns/retail-cash', authMiddleware, async (req, res) => {
             'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces, weight_kg, volume_cbm) VALUES (?, ?, ?, 0, 0)',
             [returnWarehouseId, item.product_id, addQty]
           );
-          
+
           // Record the IN change for return (new item)
           await connection.execute(
             `INSERT INTO stock_changes 
@@ -3182,11 +3171,11 @@ app.post('/api/returns/retail-debt', authMiddleware, async (req, res) => {
     if (!retail_debtor_id) {
       return res.status(400).json({ error: 'retail_debtor_id is required for retail debt returns' });
     }
-    
+
     if (!store_id) {
       return res.status(400).json({ error: 'store_id is required for retail debt returns' });
     }
-    
+
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Items array is required' });
     }
@@ -3197,23 +3186,23 @@ app.post('/api/returns/retail-debt', authMiddleware, async (req, res) => {
         return res.status(400).json({ error: 'Each item must have product_id, quantity, and unit_price' });
       }
     }
-    
+
     // Validate that retail debtor exists
     const [debtor] = await db.execute('SELECT id FROM retail_debtors WHERE id = ?', [retail_debtor_id]);
     if (debtor.length === 0) {
       return res.status(400).json({ error: 'Retail debtor not found' });
     }
-    
+
     // Validate that store exists
     const [store] = await db.execute(
       'SELECT id, warehouse_id FROM stores WHERE id = ? AND is_active = 1',
       [store_id]
     );
-    
+
     if (store.length === 0) {
       return res.status(400).json({ error: 'Store not found or inactive' });
     }
-    
+
     const returnWarehouseId = store[0].warehouse_id;
 
     // Start transaction
@@ -3230,35 +3219,35 @@ app.post('/api/returns/retail-debt', authMiddleware, async (req, res) => {
         [total_amount, req.user.id, retail_debtor_id, returnWarehouseId, store_id]
       );
       const returnId = returnResult.insertId;
-      
+
       // Process each item in the return
       for (const item of items) {
         const totalPrice = parseFloat(item.unit_price) * parseInt(item.quantity);
-        
+
         // Insert return item
         await connection.execute(
           'INSERT INTO return_items (return_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)',
           [returnId, item.product_id, item.quantity, item.unit_price, totalPrice]
         );
-        
+
         // Update warehouse stock (add back the returned items)
         const [stockRows] = await connection.execute(
           'SELECT id, total_pieces FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
           [returnWarehouseId, item.product_id]
         );
-        
+
         const addQty = parseInt(item.quantity, 10);
-        
+
         if (stockRows.length > 0) {
           const currentStock = stockRows[0];
           const oldTotalPieces = currentStock.total_pieces;
           const newTotalPieces = oldTotalPieces + addQty;
-          
+
           await connection.execute(
             'UPDATE warehouse_stock SET total_pieces = ?, updated_at = NOW() WHERE id = ?',
             [newTotalPieces, currentStock.id]
           );
-          
+
           // Record the IN change for return
           await connection.execute(
             `INSERT INTO stock_changes 
@@ -3278,7 +3267,7 @@ app.post('/api/returns/retail-debt', authMiddleware, async (req, res) => {
             'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces, weight_kg, volume_cbm) VALUES (?, ?, ?, 0, 0)',
             [returnWarehouseId, item.product_id, addQty]
           );
-          
+
           // Record the IN change for return (new item)
           await connection.execute(
             `INSERT INTO stock_changes 
@@ -3349,14 +3338,14 @@ app.get('/api/returns/:id', authMiddleware, async (req, res) => {
 
     // Get return header
     const [returnRows] = await db.execute(
-            `SELECT r.id, r.customer_id, c.full_name as customer_name, r.retail_debtor_id, rd.customer_name as retail_debtor_name, r.total_amount, r.created_by, 
+      `SELECT r.id, r.customer_id, c.full_name as customer_name, r.retail_debtor_id, rd.customer_name as retail_debtor_name, r.total_amount, r.created_by, 
               u.login as created_by_name, r.created_at, r.sale_id, r.warehouse_id, r.store_id
              FROM returns r
              LEFT JOIN customers c ON r.customer_id = c.id
              LEFT JOIN retail_debtors rd ON r.retail_debtor_id = rd.id
              JOIN users u ON r.created_by = u.id
              WHERE r.id = ?`,
-            [id]
+      [id]
     );
 
     if (returnRows.length === 0) {
@@ -3394,7 +3383,7 @@ app.post('/api/expenses', authMiddleware, async (req, res) => {
     if (!amount) {
       return res.status(400).json({ error: 'Amount is required' });
     }
-    
+
     if (!store_id) {
       return res.status(400).json({ error: 'Store ID is required' });
     }
@@ -3404,7 +3393,7 @@ app.post('/api/expenses', authMiddleware, async (req, res) => {
     if (isNaN(parsedAmount) || parsedAmount <= 0) {
       return res.status(400).json({ error: 'Amount must be a positive number' });
     }
-    
+
     // Validate store_id exists
     const [storeResult] = await db.execute('SELECT id FROM stores WHERE id = ?', [store_id]);
     if (storeResult.length === 0) {
@@ -3443,11 +3432,11 @@ app.post('/api/expenses', authMiddleware, async (req, res) => {
 app.get('/api/expenses', authMiddleware, async (req, res) => {
   try {
     const { month, year, store_id } = req.query;
-    
+
     let query = 'SELECT e.id, e.amount, e.comment, e.expense_date, e.store_id, s.name as store_name, e.created_at, e.updated_at FROM expenses e LEFT JOIN stores s ON e.store_id = s.id';
     const params = [];
     let conditions = [];
-    
+
     // Add date filtering if month and/or year are provided
     if (month && year) {
       // Both month and year provided
@@ -3463,17 +3452,17 @@ app.get('/api/expenses', authMiddleware, async (req, res) => {
       // Only month provided - this doesn't make sense without year, so we could ignore or use current year
       // For now, we'll ignore month without year to avoid ambiguous results
     }
-    
+
     // Add store filtering if store_id is provided
     if (store_id) {
       conditions.push('e.store_id = ?');
       params.push(store_id);
     }
-    
+
     if (conditions.length > 0) {
       query += ' WHERE ' + conditions.join(' AND ');
     }
-    
+
     query += ' ORDER BY e.expense_date DESC, e.created_at DESC';
 
     const [rows] = await db.execute(query, params);
@@ -3519,7 +3508,7 @@ app.put('/api/expenses/:id', authMiddleware, async (req, res) => {
         return res.status(400).json({ error: 'Amount must be a positive number' });
       }
     }
-    
+
     if (store_id !== undefined) {
       // Validate store_id exists
       const [storeResult] = await db.execute('SELECT id FROM stores WHERE id = ?', [store_id]);
@@ -3558,7 +3547,7 @@ app.put('/api/expenses/:id', authMiddleware, async (req, res) => {
       updateQuery += 'expense_date = ?';
       queryParams.push(expenseDate);
     }
-    
+
     if (store_id !== undefined) {
       if (queryParams.length > 0) updateQuery += ', ';
       updateQuery += 'store_id = ?';
@@ -3627,7 +3616,7 @@ app.get('/api/stores/:id/financial-summary', authMiddleware, async (req, res) =>
     // Build date condition
     let dateCondition = '';
     const dateParams = [];
-    
+
     // Filter by month and year
     if (month && year) {
       // Filter by specific month and year
@@ -3688,7 +3677,7 @@ app.get('/api/stores/:id/financial-summary', authMiddleware, async (req, res) =>
     const paidDebts = parseFloat(paidDebtsResult[0].paid_debts);
     const customerDebtBalance = parseFloat(customerDebtsResult[0].customer_debt_balance);
     const retailDebtBalance = parseFloat(retailDebtsResult[0].retail_debt_balance);
-    
+
     // Apply correct business logic formulas
     const totalSales = cashSales + paidDebts;  // Cash sales + paid debts
     const totalDebts = customerDebtBalance + retailDebtBalance;  // Customer + retail debts
@@ -3696,7 +3685,7 @@ app.get('/api/stores/:id/financial-summary', authMiddleware, async (req, res) =>
     // Get total expenses - separate date filtering for expenses table
     let expenseQuery = 'SELECT COALESCE(SUM(amount), 0) as total_expenses FROM expenses WHERE store_id = ?';
     let expenseParams = [storeId];
-    
+
     if (month && year) {
       // Filter by specific month and year
       expenseQuery += ' AND YEAR(expense_date) = ? AND MONTH(expense_date) = ?';
@@ -3711,7 +3700,7 @@ app.get('/api/stores/:id/financial-summary', authMiddleware, async (req, res) =>
       expenseParams.push(parseInt(year, 10));
     }
     // If no filters, get all data
-    
+
     const [expensesResult] = await db.execute(expenseQuery, expenseParams);
 
     const totalExpenses = parseFloat(expensesResult[0].total_expenses);
@@ -3745,7 +3734,7 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
     let dateCondition = '';
     let salesDateCondition = '';
     const dateParams = [];
-    
+
     // Filter by month and year
     if (month && year) {
       // Filter by specific month and year
@@ -3767,7 +3756,7 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
 
     // Get all stores
     const [storesResult] = await db.execute('SELECT id, name FROM stores ORDER BY name');
-    
+
     // Get sales data for all stores
     const [salesResult] = await db.execute(
       `SELECT s.store_id, COALESCE(SUM(co.sum), 0) as total_sales 
@@ -3803,7 +3792,7 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
                        FROM expenses 
                        WHERE store_id IS NOT NULL`;
     let expenseParams = [];
-    
+
     if (month && year) {
       expenseQuery += ' AND YEAR(expense_date) = ? AND MONTH(expense_date) = ?';
       expenseParams.push(parseInt(year, 10), parseInt(month, 10));
@@ -3814,7 +3803,7 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
       expenseQuery += ' AND YEAR(expense_date) = ?';
       expenseParams.push(parseInt(year, 10));
     }
-    
+
     expenseQuery += ' GROUP BY store_id';
     const [expensesResult] = await db.execute(expenseQuery, expenseParams);
 
@@ -3823,17 +3812,17 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
     salesResult.forEach(row => {
       salesMap[row.store_id] = parseFloat(row.total_sales);
     });
-    
+
     const debtsMap = {};
     debtsResult.forEach(row => {
       debtsMap[row.store_id] = parseFloat(row.total_debts);
     });
-    
+
     const paymentsMap = {};
     paymentsResult.forEach(row => {
       paymentsMap[row.store_id] = parseFloat(row.total_payments);
     });
-    
+
     const expensesMap = {};
     expensesResult.forEach(row => {
       expensesMap[row.store_id] = parseFloat(row.total_expenses);
@@ -3846,10 +3835,10 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
       const totalDebtsRaw = debtsMap[storeId] || 0;
       const totalPayments = paymentsMap[storeId] || 0;
       const totalExpenses = expensesMap[storeId] || 0;
-      
+
       // Apply business logic formulas
       const finalDebts = totalDebtsRaw - totalPayments;  // Net debts after payments
-      
+
       return {
         store_id: storeId,
         store_name: store.name,
@@ -3875,7 +3864,7 @@ const startServer = async () => {
     // Test database connection
     await db.execute('SELECT 1');
     console.log('Database connected successfully');
-        
+
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
