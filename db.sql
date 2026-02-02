@@ -128,6 +128,7 @@ DROP TABLE IF EXISTS `returns`;
 CREATE TABLE `returns` (
   `id` int NOT NULL,
   `customer_id` int DEFAULT NULL,
+  `retail_debtor_id` int DEFAULT NULL,
   `total_amount` decimal(10,2) NOT NULL,
   `created_by` int NOT NULL,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
@@ -593,6 +594,7 @@ ALTER TABLE `products`
 ALTER TABLE `returns`
   ADD PRIMARY KEY (`id`),
   ADD KEY `customer_id` (`customer_id`),
+  ADD KEY `retail_debtor_id` (`retail_debtor_id`),
   ADD KEY `created_by` (`created_by`),
   ADD KEY `sale_id` (`sale_id`),
   ADD KEY `fk_returns_warehouse` (`warehouse_id`),
@@ -821,6 +823,9 @@ ALTER TABLE `returns`
   ADD CONSTRAINT `returns_ibfk_1` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE SET NULL,
   ADD CONSTRAINT `returns_ibfk_2` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   ADD CONSTRAINT `returns_ibfk_3` FOREIGN KEY (`sale_id`) REFERENCES `sales` (`id`) ON DELETE SET NULL;
+  -- Add FK for retail_debtor_id if table exists
+  ALTER TABLE `returns`
+    ADD CONSTRAINT `returns_ibfk_4` FOREIGN KEY (`retail_debtor_id`) REFERENCES `retail_debtors` (`id`) ON DELETE SET NULL;
 
 --
 -- Ограничения внешнего ключа таблицы `return_items`

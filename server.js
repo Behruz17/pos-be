@@ -2182,9 +2182,9 @@ app.get('/api/retail-debtors', authMiddleware, async (req, res) => {
         rd.phone,
         rd.created_at,
         SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) as total_debt,
-        SUM(CASE WHEN ro.type = 'PAYMENT' THEN ro.amount ELSE 0 END) as total_paid,
+        SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END) as total_paid,
         (SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) - 
-         SUM(CASE WHEN ro.type = 'PAYMENT' THEN ro.amount ELSE 0 END)) as remaining_balance
+         SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END)) as remaining_balance
       FROM retail_debtors rd
       LEFT JOIN retail_operations ro ON rd.id = ro.retail_debtor_id
       GROUP BY rd.id, rd.customer_name, rd.phone, rd.created_at
@@ -2259,9 +2259,9 @@ app.get('/api/retail-debtors/:id', authMiddleware, async (req, res) => {
         rd.phone,
         rd.created_at,
         SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) as total_debt,
-        SUM(CASE WHEN ro.type = 'PAYMENT' THEN ro.amount ELSE 0 END) as total_paid,
+        SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END) as total_paid,
         (SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) - 
-         SUM(CASE WHEN ro.type = 'PAYMENT' THEN ro.amount ELSE 0 END)) as remaining_balance
+         SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END)) as remaining_balance
       FROM retail_debtors rd
       LEFT JOIN retail_operations ro ON rd.id = ro.retail_debtor_id
       WHERE rd.id = ?
@@ -2386,43 +2386,73 @@ app.get('/api/customers/:customerId/operations', authMiddleware, async (req, res
       return res.status(400).json({ error: 'store_id is required when no customer specified' });
     }
 
-    // Build query based on filters
-    let query = `SELECT co.id, co.customer_id, c.full_name as customer_name, co.store_id, 
-                    s.name as store_name, co.sale_id, co.sum, co.type, co.date
-             FROM customer_operations co
-             LEFT JOIN customers c ON co.customer_id = c.id
-             LEFT JOIN stores s ON co.store_id = s.id`;
+    // Build query based on filters - includes both customer_operations and returns
+    let query = `
+      SELECT * FROM (
+        SELECT 
+          co.id, 
+          co.customer_id, 
+          c.full_name as customer_name, 
+          co.store_id, 
+          s.name as store_name, 
+          co.sale_id, 
+          co.sum, 
+          co.type, 
+          co.date,
+          'operation' as source
+        FROM customer_operations co
+        LEFT JOIN customers c ON co.customer_id = c.id
+        LEFT JOIN stores s ON co.store_id = s.id
+        
+        UNION ALL
+        
+        SELECT 
+          r.id, 
+          r.customer_id, 
+          c.full_name as customer_name, 
+          r.store_id, 
+          s.name as store_name, 
+          r.sale_id, 
+          r.total_amount as sum, 
+          'RETURN' as type, 
+          r.created_at as date,
+          'return' as source
+        FROM returns r
+        LEFT JOIN customers c ON r.customer_id = c.id
+        LEFT JOIN stores s ON r.store_id = s.id
+      ) as operations
+    `;
     
     const queryParams = [];
     const conditions = [];
     
     // Add customer filter if provided
     if (customerId && customerId !== 'undefined' && customerId !== 'null') {
-      conditions.push('co.customer_id = ?');
+      conditions.push('customer_id = ?');
       queryParams.push(customerId);
     }
     
     // Add store filter if provided
     if (store_id) {
-      conditions.push('co.store_id = ?');
+      conditions.push('store_id = ?');
       queryParams.push(store_id);
     }
     
     // Add type filter if provided
     if (type) {
-      conditions.push('co.type = ?');
+      conditions.push('type = ?');
       queryParams.push(type);
     }
     
     // Add date filtering if month and/or year are provided
     if (month && year) {
-      conditions.push('MONTH(co.date) = ? AND YEAR(co.date) = ?');
+      conditions.push('(MONTH(date) = ? AND YEAR(date) = ?)');
       queryParams.push(parseInt(month), parseInt(year));
     } else if (month) {
-      conditions.push('MONTH(co.date) = ?');
+      conditions.push('MONTH(date) = ?');
       queryParams.push(parseInt(month));
     } else if (year) {
-      conditions.push('YEAR(co.date) = ?');
+      conditions.push('YEAR(date) = ?');
       queryParams.push(parseInt(year));
     }
     
@@ -2431,7 +2461,7 @@ app.get('/api/customers/:customerId/operations', authMiddleware, async (req, res
       query += ' WHERE ' + conditions.join(' AND ');
     }
     
-    query += ' ORDER BY co.date DESC';
+    query += ' ORDER BY date DESC';
     
     const [operations] = await db.execute(query, queryParams);
     
@@ -2570,6 +2600,20 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
       for (const item of items) {
         const totalPrice = parseFloat(item.unit_price) * parseInt(item.quantity);
         
+        // Verify product exists before inserting sale item
+        const [productCheck] = await connection.execute(
+          'SELECT id FROM products WHERE id = ?',
+          [item.product_id]
+        );
+        
+        if (productCheck.length === 0) {
+          await connection.rollback();
+          connection.release();
+          return res.status(400).json({ 
+            error: `Product with ID ${item.product_id} not found` 
+          });
+        }
+        
         // Insert sale item
         await connection.execute(
           'INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)',
@@ -2653,7 +2697,7 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
       
       // Update customer balance based on payment status and log the operation
       // Only for registered customers (not retail)
-      if (!isRetailDebt && payment_status === 'DEBT') {
+      if (!isRetailDebt && customerId && payment_status === 'DEBT') {
         // If it's debt, decrease customer balance (they owe money)
         await connection.execute(
           'UPDATE customers SET balance = balance - ? WHERE id = ?',
@@ -2665,9 +2709,9 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
           'INSERT INTO customer_operations (customer_id, store_id, sale_id, sum, type) VALUES (?, ?, ?, ?, ?)',
           [customerId, store_id, saleId, total_amount, 'DEBT']
         );
-      } else if (!isRetailDebt) {
+      } else if (!isRetailDebt && customerId) {
         // If it's paid, don't change the balance (assuming payment was made separately)
-        // Only for registered customers
+        // Only for registered customers with valid ID
         // Log the paid operation
         await connection.execute(
           'INSERT INTO customer_operations (customer_id, store_id, sale_id, sum, type) VALUES (?, ?, ?, ?, ?)',
@@ -2699,74 +2743,102 @@ app.get('/api/sales', authMiddleware, async (req, res) => {
   try {
     const { day, month, year, store_id } = req.query;
     
-    // Return retail sales + debt payments
+    // Return retail sales + debt payments + retail cash returns
     // This combines:
     // 1. Retail sales (customer_id IS NULL)
-    // 2. Debt payment operations from retail_operations
+    // 2. Debt payment/return operations from retail_operations
+    // 3. Retail cash returns (customer_id IS NULL AND retail_debtor_id IS NULL)
     
-    let baseQuery = `
-      SELECT 
-        'SALE' as type,
-        s.id as transaction_id,
-        NULL as retail_debtor_id,
-        s.total_amount as amount,
-        s.payment_status,
-        s.created_at,
-        s.created_by,
-        u.login as created_by_name,
-        s.store_id,
-        st.name as store_name,
-        s.warehouse_id,
-        w.name as warehouse_name,
-        NULL as customer_name,
-        NULL as phone
-      FROM sales s
-      LEFT JOIN stores st ON s.store_id = st.id
-      LEFT JOIN warehouses w ON s.warehouse_id = w.id
-      JOIN users u ON s.created_by = u.id
-      WHERE s.customer_id IS NULL
-      
-      UNION ALL
-      
-      SELECT 
-        'PAYMENT' as type,
-        ro.id as transaction_id,
-        ro.retail_debtor_id,
-        ro.amount,
-        'PAID' as payment_status,
-        ro.created_at,
-        NULL as created_by,
-        NULL as created_by_name,
-        rd.id as store_id,  -- Using debtor ID as store_id placeholder
-        NULL as store_name,
-        NULL as warehouse_id,
-        NULL as warehouse_name,
-        rd.customer_name,
-        rd.phone
-      FROM retail_operations ro
-      JOIN retail_debtors rd ON ro.retail_debtor_id = rd.id
-      WHERE ro.type = 'PAYMENT'
+    let dateCondition = '';
+    let dateConditions = [];
+    
+    if (day && month && year) {
+      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      dateCondition = ` AND DATE(created_at) = '${dateStr}'`;
+      dateConditions = [dateStr, dateStr, dateStr];
+    } else if (month && year) {
+      dateCondition = ` AND YEAR(created_at) = ${parseInt(year)} AND MONTH(created_at) = ${parseInt(month)}`;
+      dateConditions = [parseInt(year), parseInt(month), parseInt(year), parseInt(month), parseInt(year), parseInt(month)];
+    } else if (year) {
+      dateCondition = ` AND YEAR(created_at) = ${parseInt(year)}`;
+      dateConditions = [parseInt(year), parseInt(year), parseInt(year)];
+    }
+    
+    let storeCondition = store_id ? ` AND s.store_id = ${parseInt(store_id)}` : '';
+    let storeConditionDebtor = store_id ? ` AND rd.id = ${parseInt(store_id)}` : '';
+    let storeConditionReturn = store_id ? ` AND r.store_id = ${parseInt(store_id)}` : '';
+    
+    let query = `
+      SELECT * FROM (
+        SELECT 
+          'SALE' as type,
+          s.id as transaction_id,
+          NULL as retail_debtor_id,
+          s.total_amount as amount,
+          s.payment_status,
+          s.created_at,
+          s.created_by,
+          u.login as created_by_name,
+          s.store_id,
+          st.name as store_name,
+          s.warehouse_id,
+          w.name as warehouse_name,
+          NULL as customer_name,
+          NULL as phone
+        FROM sales s
+        LEFT JOIN stores st ON s.store_id = st.id
+        LEFT JOIN warehouses w ON s.warehouse_id = w.id
+        JOIN users u ON s.created_by = u.id
+        WHERE s.customer_id IS NULL${storeCondition}${day && month && year ? ` AND DATE(s.created_at) = '${dateConditions[0]}'` : (month && year ? ` AND YEAR(s.created_at) = ${dateConditions[0]} AND MONTH(s.created_at) = ${dateConditions[1]}` : (year ? ` AND YEAR(s.created_at) = ${dateConditions[0]}` : ''))}
+        
+        UNION ALL
+        
+        SELECT 
+          ro.type as type,
+          ro.id as transaction_id,
+          ro.retail_debtor_id,
+          ro.amount,
+          'PAID' as payment_status,
+          ro.created_at,
+          NULL as created_by,
+          NULL as created_by_name,
+          rd.id as store_id,
+          NULL as store_name,
+          NULL as warehouse_id,
+          NULL as warehouse_name,
+          rd.customer_name,
+          rd.phone
+        FROM retail_operations ro
+        JOIN retail_debtors rd ON ro.retail_debtor_id = rd.id
+        WHERE ro.type IN ('PAYMENT','RETURN')${storeConditionDebtor}${day && month && year ? ` AND DATE(ro.created_at) = '${dateConditions[0]}'` : (month && year ? ` AND YEAR(ro.created_at) = ${dateConditions[0]} AND MONTH(ro.created_at) = ${dateConditions[1]}` : (year ? ` AND YEAR(ro.created_at) = ${dateConditions[0]}` : ''))}
+        
+        UNION ALL
+        
+        SELECT 
+          'RETURN' as type,
+          r.id as transaction_id,
+          NULL as retail_debtor_id,
+          r.total_amount as amount,
+          'REFUND' as payment_status,
+          r.created_at,
+          r.created_by,
+          u.login as created_by_name,
+          r.store_id,
+          st.name as store_name,
+          r.warehouse_id,
+          w.name as warehouse_name,
+          NULL as customer_name,
+          NULL as phone
+        FROM returns r
+        LEFT JOIN stores st ON r.store_id = st.id
+        LEFT JOIN warehouses w ON r.warehouse_id = w.id
+        JOIN users u ON r.created_by = u.id
+        WHERE r.customer_id IS NULL AND r.retail_debtor_id IS NULL${storeConditionReturn}${day && month && year ? ` AND DATE(r.created_at) = '${dateConditions[0]}'` : (month && year ? ` AND YEAR(r.created_at) = ${dateConditions[0]} AND MONTH(r.created_at) = ${dateConditions[1]}` : (year ? ` AND YEAR(r.created_at) = ${dateConditions[0]}` : ''))}
+      ) as transactions
+      ORDER BY created_at DESC
     `;
-    
-    const params = [];
-    let conditions = [];
-    
-    // Add store filtering
-    if (store_id) {
-      conditions.push('store_id = ?');
-      params.push(store_id);
-    }
-    
-    // Build final query with conditions
-    let query = baseQuery;
-    
-    if (conditions.length > 0) {
-      query += ' WHERE ' + conditions.join(' AND ');
-    }
-    
-    query += ' ORDER BY created_at DESC';
 
-    const [rows] = await db.execute(query, params);
+    const [rows] = await db.execute(query);
 
     res.json(rows);
   } catch (error) {
@@ -2819,12 +2891,20 @@ app.get('/api/sales/:id', authMiddleware, async (req, res) => {
 
 // Returns Management Routes
 
-// POST /api/returns
-app.post('/api/returns', authMiddleware, async (req, res) => {
+// POST /api/returns/client - Возврат для зарегистрированных клиентов
+app.post('/api/returns/client', authMiddleware, async (req, res) => {
   try {
-    const { customer_id, sale_id, store_id, items } = req.body;
+    const { customer_id, store_id, items } = req.body;
 
     // Validate required fields
+    if (!customer_id) {
+      return res.status(400).json({ error: 'customer_id is required for client returns' });
+    }
+    
+    if (!store_id) {
+      return res.status(400).json({ error: 'store_id is required for client returns' });
+    }
+    
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Items array is required' });
     }
@@ -2835,80 +2915,26 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
         return res.status(400).json({ error: 'Each item must have product_id, quantity, and unit_price' });
       }
     }
-
-    // Get demo customer if no customer is provided
-    let customerId = customer_id;
-    if (!customerId) {
-      const [demoCustomer] = await db.execute('SELECT id FROM customers WHERE full_name = ?', ['Demo Customer']);
-      if (demoCustomer.length > 0) {
-        customerId = demoCustomer[0].id;
-      } else {
-        return res.status(500).json({ error: 'Demo customer not found' });
-      }
+    
+    const customerId = customer_id;
+    
+    // Validate that customer exists
+    const [customer] = await db.execute('SELECT id FROM customers WHERE id = ?', [customerId]);
+    if (customer.length === 0) {
+      return res.status(400).json({ error: 'Customer not found' });
     }
     
-    // If sale_id is provided, validate that return quantities don't exceed purchased quantities
-    let returnWarehouseId = null;
+    // Validate that store exists and get warehouse
+    const [store] = await db.execute(
+      'SELECT warehouse_id FROM stores WHERE id = ? AND is_active = 1',
+      [store_id]
+    );
     
-    if (sale_id) {
-      // Get the original sale items and warehouse
-      const [saleInfo] = await db.execute(
-        'SELECT warehouse_id FROM sales WHERE id = ?',
-        [sale_id]
-      );
-      
-      if (saleInfo.length === 0) {
-        return res.status(400).json({ error: 'Sale not found' });
-      }
-      
-      returnWarehouseId = saleInfo[0].warehouse_id;
-      
-      // Get the original sale items
-      const [saleItems] = await db.execute(
-        'SELECT product_id, quantity FROM sale_items WHERE sale_id = ?',
-        [sale_id]
-      );
-      
-      if (saleItems.length === 0) {
-        return res.status(400).json({ error: 'Sale has no items' });
-      }
-      
-      // Create a map of purchased quantities by product_id
-      const purchasedQuantities = {};
-      for (const saleItem of saleItems) {
-        if (purchasedQuantities[saleItem.product_id]) {
-          purchasedQuantities[saleItem.product_id] += saleItem.quantity;
-        } else {
-          purchasedQuantities[saleItem.product_id] = saleItem.quantity;
-        }
-      }
-      
-      // Check each return item against purchased quantities
-      for (const returnItem of items) {
-        const purchasedQty = purchasedQuantities[returnItem.product_id] || 0;
-        const returnQty = parseInt(returnItem.quantity);
-        
-        if (returnQty > purchasedQty) {
-          return res.status(400).json({ 
-            error: `Cannot return more than purchased. Product ID ${returnItem.product_id}: purchased ${purchasedQty}, trying to return ${returnQty}` 
-          });
-        }
-      }
-    } else if (store_id) {
-      // If no sale_id but store_id is provided, use store's warehouse
-      const [store] = await db.execute(
-        'SELECT warehouse_id FROM stores WHERE id = ? AND is_active = 1',
-        [store_id]
-      );
-      
-      if (store.length === 0) {
-        return res.status(400).json({ error: 'Store not found or inactive' });
-      }
-      
-      returnWarehouseId = store[0].warehouse_id;
-    } else {
-      return res.status(400).json({ error: 'Either sale_id or store_id is required for returns' });
+    if (store.length === 0) {
+      return res.status(400).json({ error: 'Store not found or inactive' });
     }
+    
+    const returnWarehouseId = store[0].warehouse_id;
 
     // Start transaction
     const connection = await db.getConnection();
@@ -2920,8 +2946,8 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
 
       // Create return
       const [returnResult] = await connection.execute(
-        'INSERT INTO returns (customer_id, total_amount, created_by, sale_id, warehouse_id, store_id) VALUES (?, ?, ?, ?, ?, ?)',
-        [customerId, total_amount, req.user.id, sale_id || null, returnWarehouseId, store_id || null]
+        'INSERT INTO returns (customer_id, total_amount, created_by, warehouse_id, store_id) VALUES (?, ?, ?, ?, ?)',
+        [customerId, total_amount, req.user.id, returnWarehouseId, store_id || null]
       );
       const returnId = returnResult.insertId;
       
@@ -2964,7 +2990,7 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
             [
               returnWarehouseId, item.product_id, req.user.id,
               oldTotalPieces, newTotalPieces,
-              `Return #${returnId}${sale_id ? ` (sale #${sale_id})` : ''}`
+              `Return #${returnId}`
             ]
           );
         } else {
@@ -2984,7 +3010,7 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
             [
               returnWarehouseId, item.product_id, req.user.id,
               0, addQty,
-              `Return #${returnId}${sale_id ? ` (sale #${sale_id})` : ''}`
+              `Return #${returnId}`
             ]
           );
         }
@@ -3002,7 +3028,7 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
 
       res.status(201).json({
         id: returnId,
-        message: 'Return created successfully'
+        message: 'Client return created successfully'
       });
     } catch (error) {
       await connection.rollback();
@@ -3010,7 +3036,288 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
       throw error;
     }
   } catch (error) {
-    console.error('Create return error:', error);
+    console.error('Create client return error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/returns/retail-cash - Возврат для розничных клиентов (наличные)
+app.post('/api/returns/retail-cash', authMiddleware, async (req, res) => {
+  try {
+    const { store_id, items } = req.body;
+
+    // Validate required fields
+    if (!store_id) {
+      return res.status(400).json({ error: 'store_id is required for retail cash returns' });
+    }
+    
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items array is required' });
+    }
+
+    // Validate each item
+    for (const item of items) {
+      if (!item.product_id || !item.quantity || !item.unit_price) {
+        return res.status(400).json({ error: 'Each item must have product_id, quantity, and unit_price' });
+      }
+    }
+    
+    // Validate that store exists
+    const [store] = await db.execute(
+      'SELECT id, warehouse_id FROM stores WHERE id = ? AND is_active = 1',
+      [store_id]
+    );
+    
+    if (store.length === 0) {
+      return res.status(400).json({ error: 'Store not found or inactive' });
+    }
+    
+    const returnWarehouseId = store[0].warehouse_id;
+
+    // Start transaction
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Calculate total amount
+      const total_amount = items.reduce((sum, item) => sum + (parseFloat(item.unit_price) * parseInt(item.quantity)), 0);
+
+      // Create return (without customer_id for retail cash)
+      const [returnResult] = await connection.execute(
+        'INSERT INTO returns (total_amount, created_by, warehouse_id, store_id) VALUES (?, ?, ?, ?)',
+        [total_amount, req.user.id, returnWarehouseId, store_id]
+      );
+      const returnId = returnResult.insertId;
+      
+      // Process each item in the return
+      for (const item of items) {
+        const totalPrice = parseFloat(item.unit_price) * parseInt(item.quantity);
+        
+        // Insert return item
+        await connection.execute(
+          'INSERT INTO return_items (return_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)',
+          [returnId, item.product_id, item.quantity, item.unit_price, totalPrice]
+        );
+        
+        // Update warehouse stock (add back the returned items)
+        const [stockRows] = await connection.execute(
+          'SELECT id, total_pieces FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
+          [returnWarehouseId, item.product_id]
+        );
+        
+        const addQty = parseInt(item.quantity, 10);
+        
+        if (stockRows.length > 0) {
+          const currentStock = stockRows[0];
+          const oldTotalPieces = currentStock.total_pieces;
+          const newTotalPieces = oldTotalPieces + addQty;
+          
+          await connection.execute(
+            'UPDATE warehouse_stock SET total_pieces = ?, updated_at = NOW() WHERE id = ?',
+            [newTotalPieces, currentStock.id]
+          );
+          
+          // Record the IN change for return
+          await connection.execute(
+            `INSERT INTO stock_changes 
+             (warehouse_id, product_id, user_id, change_type,
+              old_total_pieces, new_total_pieces,
+              old_weight_kg, new_weight_kg,
+              old_volume_cbm, new_volume_cbm, reason)
+             VALUES (?, ?, ?, 'IN', ?, ?, 0, 0, 0, 0, ?)`,
+            [
+              returnWarehouseId, item.product_id, req.user.id,
+              oldTotalPieces, newTotalPieces,
+              `Retail cash return #${returnId}`
+            ]
+          );
+        } else {
+          await connection.execute(
+            'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces, weight_kg, volume_cbm) VALUES (?, ?, ?, 0, 0)',
+            [returnWarehouseId, item.product_id, addQty]
+          );
+          
+          // Record the IN change for return (new item)
+          await connection.execute(
+            `INSERT INTO stock_changes 
+             (warehouse_id, product_id, user_id, change_type,
+              old_total_pieces, new_total_pieces,
+              old_weight_kg, new_weight_kg,
+              old_volume_cbm, new_volume_cbm, reason)
+             VALUES (?, ?, ?, 'IN', ?, ?, 0, 0, 0, 0, ?)`,
+            [
+              returnWarehouseId, item.product_id, req.user.id,
+              0, addQty,
+              `Retail cash return #${returnId}`
+            ]
+          );
+        }
+      }
+
+      // Commit transaction
+      await connection.commit();
+      connection.release();
+
+      res.status(201).json({
+        id: returnId,
+        message: 'Retail cash return created successfully'
+      });
+    } catch (error) {
+      await connection.rollback();
+      connection.release();
+      throw error;
+    }
+  } catch (error) {
+    console.error('Create retail cash return error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/returns/retail-debt - Возврат для розничных клиентов (в долг)
+app.post('/api/returns/retail-debt', authMiddleware, async (req, res) => {
+  try {
+    const { retail_debtor_id, store_id, items } = req.body;
+
+    // Validate required fields
+    if (!retail_debtor_id) {
+      return res.status(400).json({ error: 'retail_debtor_id is required for retail debt returns' });
+    }
+    
+    if (!store_id) {
+      return res.status(400).json({ error: 'store_id is required for retail debt returns' });
+    }
+    
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items array is required' });
+    }
+
+    // Validate each item
+    for (const item of items) {
+      if (!item.product_id || !item.quantity || !item.unit_price) {
+        return res.status(400).json({ error: 'Each item must have product_id, quantity, and unit_price' });
+      }
+    }
+    
+    // Validate that retail debtor exists
+    const [debtor] = await db.execute('SELECT id FROM retail_debtors WHERE id = ?', [retail_debtor_id]);
+    if (debtor.length === 0) {
+      return res.status(400).json({ error: 'Retail debtor not found' });
+    }
+    
+    // Validate that store exists
+    const [store] = await db.execute(
+      'SELECT id, warehouse_id FROM stores WHERE id = ? AND is_active = 1',
+      [store_id]
+    );
+    
+    if (store.length === 0) {
+      return res.status(400).json({ error: 'Store not found or inactive' });
+    }
+    
+    const returnWarehouseId = store[0].warehouse_id;
+
+    // Start transaction
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Calculate total amount
+      const total_amount = items.reduce((sum, item) => sum + (parseFloat(item.unit_price) * parseInt(item.quantity)), 0);
+
+      // Create return (link to retail debtor)
+      const [returnResult] = await connection.execute(
+        'INSERT INTO returns (total_amount, created_by, retail_debtor_id, warehouse_id, store_id) VALUES (?, ?, ?, ?, ?)',
+        [total_amount, req.user.id, retail_debtor_id, returnWarehouseId, store_id]
+      );
+      const returnId = returnResult.insertId;
+      
+      // Process each item in the return
+      for (const item of items) {
+        const totalPrice = parseFloat(item.unit_price) * parseInt(item.quantity);
+        
+        // Insert return item
+        await connection.execute(
+          'INSERT INTO return_items (return_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)',
+          [returnId, item.product_id, item.quantity, item.unit_price, totalPrice]
+        );
+        
+        // Update warehouse stock (add back the returned items)
+        const [stockRows] = await connection.execute(
+          'SELECT id, total_pieces FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
+          [returnWarehouseId, item.product_id]
+        );
+        
+        const addQty = parseInt(item.quantity, 10);
+        
+        if (stockRows.length > 0) {
+          const currentStock = stockRows[0];
+          const oldTotalPieces = currentStock.total_pieces;
+          const newTotalPieces = oldTotalPieces + addQty;
+          
+          await connection.execute(
+            'UPDATE warehouse_stock SET total_pieces = ?, updated_at = NOW() WHERE id = ?',
+            [newTotalPieces, currentStock.id]
+          );
+          
+          // Record the IN change for return
+          await connection.execute(
+            `INSERT INTO stock_changes 
+             (warehouse_id, product_id, user_id, change_type,
+              old_total_pieces, new_total_pieces,
+              old_weight_kg, new_weight_kg,
+              old_volume_cbm, new_volume_cbm, reason)
+             VALUES (?, ?, ?, 'IN', ?, ?, 0, 0, 0, 0, ?)`,
+            [
+              returnWarehouseId, item.product_id, req.user.id,
+              oldTotalPieces, newTotalPieces,
+              `Retail debt return #${returnId} (debtor #${retail_debtor_id})`
+            ]
+          );
+        } else {
+          await connection.execute(
+            'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces, weight_kg, volume_cbm) VALUES (?, ?, ?, 0, 0)',
+            [returnWarehouseId, item.product_id, addQty]
+          );
+          
+          // Record the IN change for return (new item)
+          await connection.execute(
+            `INSERT INTO stock_changes 
+             (warehouse_id, product_id, user_id, change_type,
+              old_total_pieces, new_total_pieces,
+              old_weight_kg, new_weight_kg,
+              old_volume_cbm, new_volume_cbm, reason)
+             VALUES (?, ?, ?, 'IN', ?, ?, 0, 0, 0, 0, ?)`,
+            [
+              returnWarehouseId, item.product_id, req.user.id,
+              0, addQty,
+              `Retail debt return #${returnId} (debtor #${retail_debtor_id})`
+            ]
+          );
+        }
+      }
+
+      // Create retail operation to reduce debtor's debt
+      await connection.execute(
+        'INSERT INTO retail_operations (retail_debtor_id, amount, type, description) VALUES (?, ?, ?, ?)',
+        [retail_debtor_id, total_amount, 'RETURN', `Return #${returnId}`]
+      );
+
+      // Commit transaction
+      await connection.commit();
+      connection.release();
+
+      res.status(201).json({
+        id: returnId,
+        retail_debtor_id: retail_debtor_id,
+        message: 'Retail debt return created successfully'
+      });
+    } catch (error) {
+      await connection.rollback();
+      connection.release();
+      throw error;
+    }
+  } catch (error) {
+    console.error('Create retail debt return error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3019,10 +3326,11 @@ app.post('/api/returns', authMiddleware, async (req, res) => {
 app.get('/api/returns', authMiddleware, async (req, res) => {
   try {
     const [rows] = await db.execute(
-      `SELECT r.id, r.customer_id, c.full_name as customer_name, r.total_amount, r.created_by, 
+      `SELECT r.id, r.customer_id, c.full_name as customer_name, r.retail_debtor_id, rd.customer_name as retail_debtor_name, r.total_amount, r.created_by, 
               u.login as created_by_name, r.created_at, r.sale_id, r.warehouse_id, r.store_id
        FROM returns r
        LEFT JOIN customers c ON r.customer_id = c.id
+       LEFT JOIN retail_debtors rd ON r.retail_debtor_id = rd.id
        JOIN users u ON r.created_by = u.id
        ORDER BY r.created_at DESC`
     );
@@ -3041,13 +3349,14 @@ app.get('/api/returns/:id', authMiddleware, async (req, res) => {
 
     // Get return header
     const [returnRows] = await db.execute(
-      `SELECT r.id, r.customer_id, c.full_name as customer_name, r.total_amount, r.created_by, 
+            `SELECT r.id, r.customer_id, c.full_name as customer_name, r.retail_debtor_id, rd.customer_name as retail_debtor_name, r.total_amount, r.created_by, 
               u.login as created_by_name, r.created_at, r.sale_id, r.warehouse_id, r.store_id
-       FROM returns r
-       LEFT JOIN customers c ON r.customer_id = c.id
-       JOIN users u ON r.created_by = u.id
-       WHERE r.id = ?`,
-      [id]
+             FROM returns r
+             LEFT JOIN customers c ON r.customer_id = c.id
+             LEFT JOIN retail_debtors rd ON r.retail_debtor_id = rd.id
+             JOIN users u ON r.created_by = u.id
+             WHERE r.id = ?`,
+            [id]
     );
 
     if (returnRows.length === 0) {
@@ -3335,29 +3644,54 @@ app.get('/api/stores/:id/financial-summary', authMiddleware, async (req, res) =>
     }
     // If no filters, get all data
 
-    // Get total PAID and PAYMENT from customer_operations
-    const [salesResult] = await db.execute(
-      `SELECT COALESCE(SUM(sum), 0) as total_sales_raw 
-       FROM customer_operations 
-       WHERE store_id = ? AND type IN ('PAID', 'PAYMENT')${dateCondition}`,
+    // Get cash sales from sales table (payment_status = 'PAID' and customer_id IS NULL)
+    const [cashSalesResult] = await db.execute(
+      `SELECT COALESCE(SUM(total_amount), 0) as cash_sales 
+       FROM sales 
+       WHERE store_id = ? AND payment_status = 'PAID' AND customer_id IS NULL${dateCondition.replace(/date/g, 'created_at')}`,
       [storeId, ...dateParams]
     );
 
-    // Get total debts from customer_operations (DEBT type) - direct query
-    const [debtsResult] = await db.execute(
-      `SELECT COALESCE(SUM(sum), 0) as total_debts_raw 
+    // Get paid debts from customer_operations (type = 'PAID')
+    const [paidDebtsResult] = await db.execute(
+      `SELECT COALESCE(SUM(sum), 0) as paid_debts 
        FROM customer_operations 
-       WHERE store_id = ? AND type = 'DEBT'${dateCondition}`,
+       WHERE store_id = ? AND type = 'PAID'${dateCondition}`,
       [storeId, ...dateParams]
+    );
+
+    // Get customer debt balances (negative balances = what customers owe)
+    const [customerDebtsResult] = await db.execute(
+      `SELECT COALESCE(SUM(CASE WHEN balance < 0 THEN ABS(balance) ELSE 0 END), 0) as customer_debt_balance 
+       FROM customers 
+       WHERE store_id = ?`,
+      [storeId]
+    );
+
+    // Get retail debtor debt balances
+    const [retailDebtsResult] = await db.execute(
+      `SELECT COALESCE(SUM(
+         (SELECT COALESCE(SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END), 0) 
+          FROM retail_operations ro 
+          WHERE ro.retail_debtor_id = rd.id)
+         -
+         (SELECT COALESCE(SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END), 0) 
+          FROM retail_operations ro 
+          WHERE ro.retail_debtor_id = rd.id)
+       ), 0) as retail_debt_balance 
+       FROM retail_debtors rd 
+       WHERE rd.id IN (SELECT DISTINCT retail_debtor_id FROM retail_operations)`
     );
 
     // Calculate final values
-    const totalSalesRaw = parseFloat(salesResult[0].total_sales_raw);
-    const totalDebtsRaw = parseFloat(debtsResult[0].total_debts_raw);
+    const cashSales = parseFloat(cashSalesResult[0].cash_sales);
+    const paidDebts = parseFloat(paidDebtsResult[0].paid_debts);
+    const customerDebtBalance = parseFloat(customerDebtsResult[0].customer_debt_balance);
+    const retailDebtBalance = parseFloat(retailDebtsResult[0].retail_debt_balance);
     
-    // Apply business logic formulas
-    const totalSales = totalSalesRaw - totalDebtsRaw;  // (PAID + PAYMENT) - DEBT
-    const finalDebts = totalDebtsRaw;                // Just total debts
+    // Apply correct business logic formulas
+    const totalSales = cashSales + paidDebts;  // Cash sales + paid debts
+    const totalDebts = customerDebtBalance + retailDebtBalance;  // Customer + retail debts
 
     // Get total expenses - separate date filtering for expenses table
     let expenseQuery = 'SELECT COALESCE(SUM(amount), 0) as total_expenses FROM expenses WHERE store_id = ?';
@@ -3385,9 +3719,15 @@ app.get('/api/stores/:id/financial-summary', authMiddleware, async (req, res) =>
     res.json({
       store_id: parseInt(storeId),
       store_name: store.name,
-      total_sales: totalSales,
-      total_debts: finalDebts,
-      total_expenses: totalExpenses
+      total_sales: parseFloat(totalSales.toFixed(2)),
+      total_debts: parseFloat(totalDebts.toFixed(2)),
+      total_expenses: parseFloat(totalExpenses.toFixed(2)),
+      breakdown: {
+        cash_sales: parseFloat(cashSales.toFixed(2)),
+        paid_debts: parseFloat(paidDebts.toFixed(2)),
+        customer_debt_balance: parseFloat(customerDebtBalance.toFixed(2)),
+        retail_debt_balance: parseFloat(retailDebtBalance.toFixed(2))
+      }
     });
   } catch (error) {
     console.error('Get store financial summary error:', error);
