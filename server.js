@@ -2164,11 +2164,25 @@ app.post('/api/customers/:id/payment', authMiddleware, async (req, res) => {
 // GET /api/retail-debtors
 app.get('/api/retail-debtors', authMiddleware, async (req, res) => {
   try {
+    const { store_id } = req.query;
+
+    // For non-admin users, restrict to their store
+    let storeFilter = '';
+    const params = [];
+    if (req.user.role !== 'ADMIN') {
+      storeFilter = 'WHERE rd.store_id = ?';
+      params.push(req.userStoreId);
+    } else if (store_id) {
+      storeFilter = 'WHERE rd.store_id = ?';
+      params.push(store_id);
+    }
+
     const [debtors] = await db.execute(`
       SELECT 
         rd.id,
         rd.customer_name,
         rd.phone,
+        rd.store_id,
         rd.created_at,
         SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) as total_debt,
         SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END) as total_paid,
@@ -2176,10 +2190,11 @@ app.get('/api/retail-debtors', authMiddleware, async (req, res) => {
          SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END)) as remaining_balance
       FROM retail_debtors rd
       LEFT JOIN retail_operations ro ON rd.id = ro.retail_debtor_id
-      GROUP BY rd.id, rd.customer_name, rd.phone, rd.created_at
+      ${storeFilter}
+      GROUP BY rd.id, rd.customer_name, rd.phone, rd.store_id, rd.created_at
       HAVING remaining_balance > 0
       ORDER BY remaining_balance DESC
-    `);
+    `, params);
 
     res.json(debtors);
   } catch (error) {
@@ -2191,7 +2206,7 @@ app.get('/api/retail-debtors', authMiddleware, async (req, res) => {
 // POST /api/retail-debtors
 app.post('/api/retail-debtors', authMiddleware, async (req, res) => {
   try {
-    const { customer_name, phone, sale_id, amount } = req.body;
+    const { customer_name, phone, sale_id, amount, store_id } = req.body;
 
     // Валидация
     if (!customer_name || !sale_id || !amount) {
@@ -2202,10 +2217,30 @@ app.post('/api/retail-debtors', authMiddleware, async (req, res) => {
     await connection.beginTransaction();
 
     try {
+      // Determine store for debtor (admins can pass store_id, users are limited to their store)
+      let actualStoreId = store_id;
+      if (req.user.role !== 'ADMIN') {
+        actualStoreId = req.userStoreId;
+      } else {
+        if (!actualStoreId) {
+          return res.status(400).json({ error: 'Store ID is required for admin when creating retail debtor' });
+        }
+      }
+
+      // Validate that store exists (if provided)
+      if (actualStoreId) {
+        const [storeCheck] = await connection.execute('SELECT id FROM stores WHERE id = ?', [actualStoreId]);
+        if (storeCheck.length === 0) {
+          await connection.rollback();
+          connection.release();
+          return res.status(400).json({ error: 'Store not found' });
+        }
+      }
+
       // Создаем должника
       const [debtorResult] = await connection.execute(
-        'INSERT INTO retail_debtors (customer_name, phone) VALUES (?, ?)',
-        [customer_name, phone || null]
+        'INSERT INTO retail_debtors (customer_name, phone, store_id) VALUES (?, ?, ?)',
+        [customer_name, phone || null, actualStoreId || null]
       );
 
       const debtorId = debtorResult.insertId;
@@ -2246,6 +2281,7 @@ app.get('/api/retail-debtors/:id', authMiddleware, async (req, res) => {
         rd.id,
         rd.customer_name,
         rd.phone,
+        rd.store_id,
         rd.created_at,
         SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) as total_debt,
         SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END) as total_paid,
@@ -2254,10 +2290,15 @@ app.get('/api/retail-debtors/:id', authMiddleware, async (req, res) => {
       FROM retail_debtors rd
       LEFT JOIN retail_operations ro ON rd.id = ro.retail_debtor_id
       WHERE rd.id = ?
-      GROUP BY rd.id, rd.customer_name, rd.phone, rd.created_at
+      GROUP BY rd.id, rd.customer_name, rd.phone, rd.store_id, rd.created_at
     `, [id]);
 
     if (debtor.length === 0) {
+      return res.status(404).json({ error: 'Retail debtor not found' });
+    }
+
+    // Restrict access for non-admins to their store
+    if (req.user.role !== 'ADMIN' && debtor[0].store_id !== req.userStoreId) {
       return res.status(404).json({ error: 'Retail debtor not found' });
     }
 
@@ -2297,12 +2338,16 @@ app.post('/api/retail-debtors/:id/payments', authMiddleware, async (req, res) =>
       return res.status(400).json({ error: 'Valid amount is required' });
     }
 
-    // Проверяем существует ли должник
+    // Проверяем существует ли должник и доступность для пользователя
     const [debtor] = await db.execute(
-      'SELECT id FROM retail_debtors WHERE id = ?', [id]
+      'SELECT id, store_id FROM retail_debtors WHERE id = ?', [id]
     );
 
     if (debtor.length === 0) {
+      return res.status(404).json({ error: 'Retail debtor not found' });
+    }
+
+    if (req.user.role !== 'ADMIN' && debtor[0].store_id !== req.userStoreId) {
       return res.status(404).json({ error: 'Retail debtor not found' });
     }
 
@@ -2656,10 +2701,10 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
           return res.status(400).json({ error: 'Customer name is required for retail debt sales' });
         }
 
-        // Create retail debtor
+        // Create retail debtor (associate with sale's store)
         const [debtorResult] = await connection.execute(
-          'INSERT INTO retail_debtors (customer_name, phone) VALUES (?, ?)',
-          [customer_name, phone || null]
+          'INSERT INTO retail_debtors (customer_name, phone, store_id) VALUES (?, ?, ?)',
+          [customer_name, phone || null, store_id || null]
         );
 
         const debtorId = debtorResult.insertId;
@@ -2754,7 +2799,7 @@ app.get('/api/sales', authMiddleware, async (req, res) => {
     }
 
     let storeCondition = store_id ? ` AND s.store_id = ${parseInt(store_id)}` : '';
-    let storeConditionDebtor = store_id ? ` AND rd.id = ${parseInt(store_id)}` : '';
+    let storeConditionDebtor = store_id ? ` AND rd.store_id = ${parseInt(store_id)}` : '';
     let storeConditionReturn = store_id ? ` AND r.store_id = ${parseInt(store_id)}` : '';
 
     let query = `
@@ -2791,7 +2836,7 @@ app.get('/api/sales', authMiddleware, async (req, res) => {
           ro.created_at,
           NULL as created_by,
           NULL as created_by_name,
-          rd.id as store_id,
+          rd.store_id as store_id,
           NULL as store_name,
           NULL as warehouse_id,
           NULL as warehouse_name,
@@ -3658,19 +3703,19 @@ app.get('/api/stores/:id/financial-summary', authMiddleware, async (req, res) =>
     );
 
     // Get retail debtor debt balances
-    const [retailDebtsResult] = await db.execute(
+     const [retailDebtsResult] = await db.execute(
       `SELECT COALESCE(SUM(
-         (SELECT COALESCE(SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END), 0) 
-          FROM retail_operations ro 
-          WHERE ro.retail_debtor_id = rd.id)
-         -
-         (SELECT COALESCE(SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END), 0) 
-          FROM retail_operations ro 
-          WHERE ro.retail_debtor_id = rd.id)
+        (SELECT COALESCE(SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END), 0) 
+         FROM retail_operations ro 
+         WHERE ro.retail_debtor_id = rd.id)
+        -
+        (SELECT COALESCE(SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END), 0) 
+         FROM retail_operations ro 
+         WHERE ro.retail_debtor_id = rd.id)
        ), 0) as retail_debt_balance 
        FROM retail_debtors rd 
-       WHERE rd.id IN (SELECT DISTINCT retail_debtor_id FROM retail_operations)`
-    );
+       WHERE rd.store_id = ? AND rd.id IN (SELECT DISTINCT retail_debtor_id FROM retail_operations)`
+     , [storeId]);
 
     // Calculate final values
     const cashSales = parseFloat(cashSalesResult[0].cash_sales);
