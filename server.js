@@ -3641,11 +3641,11 @@ app.get('/api/stores/:id/financial-summary', authMiddleware, async (req, res) =>
       [storeId, ...dateParams]
     );
 
-    // Get paid debts from customer_operations (type = 'PAID')
+    // Get paid debts and customer payments from customer_operations (type IN ('PAID','PAYMENT'))
     const [paidDebtsResult] = await db.execute(
       `SELECT COALESCE(SUM(sum), 0) as paid_debts 
        FROM customer_operations 
-       WHERE store_id = ? AND type = 'PAID'${dateCondition}`,
+       WHERE store_id = ? AND type IN ('PAID','PAYMENT')${dateCondition}`,
       [storeId, ...dateParams]
     );
 
@@ -3679,7 +3679,7 @@ app.get('/api/stores/:id/financial-summary', authMiddleware, async (req, res) =>
     const retailDebtBalance = parseFloat(retailDebtsResult[0].retail_debt_balance);
 
     // Apply correct business logic formulas
-    const totalSales = cashSales + paidDebts;  // Cash sales + paid debts
+    const totalSales = cashSales + paidDebts;  // Cash sales + paid debts and customer payments
     const totalDebts = customerDebtBalance + retailDebtBalance;  // Customer + retail debts
 
     // Get total expenses - separate date filtering for expenses table
@@ -3757,34 +3757,40 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
     // Get all stores
     const [storesResult] = await db.execute('SELECT id, name FROM stores ORDER BY name');
 
-    // Get sales data for all stores
-    const [salesResult] = await db.execute(
-      `SELECT s.store_id, COALESCE(SUM(co.sum), 0) as total_sales 
-       FROM customer_operations co 
-       JOIN sales s ON co.customer_id = s.customer_id 
-       WHERE co.type IN ('PAID', 'PAYMENT')${salesDateCondition}
+    // Get cash sales per store (retail cash sales: payment_status = 'PAID' and customer_id IS NULL)
+    const [cashSalesResult] = await db.execute(
+      `SELECT s.store_id, COALESCE(SUM(s.total_amount), 0) as cash_sales
+       FROM sales s
+       WHERE s.payment_status = 'PAID' AND s.customer_id IS NULL${salesDateCondition}
        GROUP BY s.store_id`,
       dateParams
     );
 
-    // Get debt data for all stores
-    const [debtsResult] = await db.execute(
-      `SELECT s.store_id, COALESCE(SUM(co.sum), 0) as total_debts 
-       FROM customer_operations co 
-       JOIN sales s ON co.customer_id = s.customer_id 
-       WHERE co.type = 'DEBT'${salesDateCondition}
-       GROUP BY s.store_id`,
+    // Get paid debts and customer payments per store from customer_operations (type IN ('PAID','PAYMENT'))
+    const [paidDebtsResult] = await db.execute(
+      `SELECT store_id, COALESCE(SUM(sum), 0) as paid_debts
+       FROM customer_operations
+       WHERE store_id IS NOT NULL AND type IN ('PAID','PAYMENT')${dateCondition}
+       GROUP BY store_id`,
       dateParams
     );
 
-    // Get payment data for debt calculation
-    const [paymentsResult] = await db.execute(
-      `SELECT s.store_id, COALESCE(SUM(co.sum), 0) as total_payments 
-       FROM customer_operations co 
-       JOIN sales s ON co.customer_id = s.customer_id 
-       WHERE co.type = 'PAYMENT'${salesDateCondition}
-       GROUP BY s.store_id`,
-      dateParams
+    // Get customer debt balances per store (negative balances)
+    const [customerDebtsResult] = await db.execute(
+      `SELECT store_id, COALESCE(SUM(CASE WHEN balance < 0 THEN ABS(balance) ELSE 0 END), 0) as customer_debt_balance
+       FROM customers
+       WHERE store_id IS NOT NULL
+       GROUP BY store_id`
+    );
+
+    // Get retail debt balances per store by linking retail_operations to sales (when sale_id exists)
+    const [retailDebtsResult] = await db.execute(
+      `SELECT s.store_id, COALESCE(SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) -
+                                 SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END), 0) as retail_debt_balance
+       FROM retail_operations ro
+       JOIN sales s ON ro.sale_id = s.id
+       WHERE s.store_id IS NOT NULL
+       GROUP BY s.store_id`
     );
 
     // Get expense data for all stores
@@ -3808,19 +3814,24 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
     const [expensesResult] = await db.execute(expenseQuery, expenseParams);
 
     // Create maps for quick lookup
-    const salesMap = {};
-    salesResult.forEach(row => {
-      salesMap[row.store_id] = parseFloat(row.total_sales);
+    const cashSalesMap = {};
+    cashSalesResult.forEach(row => {
+      cashSalesMap[row.store_id] = parseFloat(row.cash_sales);
     });
 
-    const debtsMap = {};
-    debtsResult.forEach(row => {
-      debtsMap[row.store_id] = parseFloat(row.total_debts);
+    const paidDebtsMap = {};
+    paidDebtsResult.forEach(row => {
+      paidDebtsMap[row.store_id] = parseFloat(row.paid_debts);
     });
 
-    const paymentsMap = {};
-    paymentsResult.forEach(row => {
-      paymentsMap[row.store_id] = parseFloat(row.total_payments);
+    const customerDebtMap = {};
+    customerDebtsResult.forEach(row => {
+      customerDebtMap[row.store_id] = parseFloat(row.customer_debt_balance);
+    });
+
+    const retailDebtMap = {};
+    retailDebtsResult.forEach(row => {
+      retailDebtMap[row.store_id] = parseFloat(row.retail_debt_balance);
     });
 
     const expensesMap = {};
@@ -3828,23 +3839,30 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
       expensesMap[row.store_id] = parseFloat(row.total_expenses);
     });
 
-    // Build response for all stores
+    // Build response for all stores mirroring single-store output
     const storeStats = storesResult.map(store => {
       const storeId = store.id;
-      const totalSales = salesMap[storeId] || 0;
-      const totalDebtsRaw = debtsMap[storeId] || 0;
-      const totalPayments = paymentsMap[storeId] || 0;
+      const cashSales = cashSalesMap[storeId] || 0;
+      const paidDebts = paidDebtsMap[storeId] || 0;
+      const customerDebtBalance = customerDebtMap[storeId] || 0;
+      const retailDebtBalance = retailDebtMap[storeId] || 0;
       const totalExpenses = expensesMap[storeId] || 0;
 
-      // Apply business logic formulas
-      const finalDebts = totalDebtsRaw - totalPayments;  // Net debts after payments
+      const totalSales = cashSales + paidDebts; // Cash sales + paid debts/payments
+      const totalDebts = customerDebtBalance + retailDebtBalance;
 
       return {
         store_id: storeId,
         store_name: store.name,
-        total_sales: totalSales,
-        total_debts: finalDebts,
-        total_expenses: totalExpenses
+        total_sales: parseFloat(totalSales.toFixed(2)),
+        total_debts: parseFloat(totalDebts.toFixed(2)),
+        total_expenses: parseFloat(totalExpenses.toFixed(2)),
+        breakdown: {
+          cash_sales: parseFloat(cashSales.toFixed(2)),
+          paid_debts: parseFloat(paidDebts.toFixed(2)),
+          customer_debt_balance: parseFloat(customerDebtBalance.toFixed(2)),
+          retail_debt_balance: parseFloat(retailDebtBalance.toFixed(2))
+        }
       };
     });
 

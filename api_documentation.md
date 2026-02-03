@@ -1993,7 +1993,13 @@
       "store_name": "Магазин1",
       "total_sales": 145.00,
       "total_debts": 640.00,
-      "total_expenses": 500.00
+      "total_expenses": 500.00,
+      "breakdown": {
+        "cash_sales": 50.00,
+        "paid_debts": 95.00,
+        "customer_debt_balance": 400.00,
+        "retail_debt_balance": 240.00
+      }
     },
     {
       "store_id": 2,
@@ -2010,9 +2016,14 @@
 - `stores` - Массив с данными по каждому магазину
   - `store_id` - ID магазина
   - `store_name` - Название магазина
-  - `total_sales` - Общая сумма продаж из customer_operations
+  - `total_sales` - Общая сумма продаж = cash sales + (оплаты по долгам и продажи клиентов) (соответствует логике `/api/stores/:id/financial-summary`)
   - `total_debts` - Общая сумма долгов = долги - оплаты
   - `total_expenses` - Общая сумма расходов
+  - `breakdown` - Объект с детализацией по составляющим:
+    - `cash_sales` - Продажи наличными (розничные, `sales.payment_status = 'PAID'` и `customer_id IS NULL`)
+    - `paid_debts` - Оплаты по долгам/погашения (`customer_operations.type IN ('PAID','PAYMENT')`)
+    - `customer_debt_balance` - Баланс долгов клиентов (сумма отрицательных балансов в `customers`)
+    - `retail_debt_balance` - Баланс розничных должников (агрегат по `retail_operations` связанный с `sales`)
 - `total_stores` - Общее количество магазинов в системе
 
 ### GET /api/stores/:id/financial-summary
