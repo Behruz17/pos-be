@@ -342,9 +342,10 @@ app.post('/api/products', upload.single('image'), authMiddleware, async (req, re
       return res.status(400).json({ error: 'Product name is required' });
     }
 
-    if (!product_code) {
-      return res.status(400).json({ error: 'Product code is required' });
-    }
+    // product_code is optional for new products
+    // if (!product_code) {
+    //   return res.status(400).json({ error: 'Product code is required' });
+    // }
 
     // Set default notification threshold to 10 if not provided
     const threshold = notification_threshold !== undefined ? parseInt(notification_threshold, 10) : 10;
