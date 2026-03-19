@@ -4448,6 +4448,162 @@ app.get('/api/stores/:storeId/resellers', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/warehouses/:warehouseId/delivery-drivers
+app.get('/api/warehouses/:warehouseId/delivery-drivers', authMiddleware, async (req, res) => {
+  try {
+    const { warehouseId } = req.params;
+
+    // Verify warehouse exists
+    const [warehouse] = await db.execute('SELECT id, name FROM warehouses WHERE id = ?', [warehouseId]);
+    if (warehouse.length === 0) {
+      return res.status(404).json({ error: 'Warehouse not found' });
+    }
+
+    // Get delivery drivers for this warehouse
+    const [drivers] = await db.execute(
+      `SELECT id, name, phone, balance, status, warehouse_id, created_at, updated_at
+       FROM delivery_drivers 
+       WHERE warehouse_id = ? AND status = 1
+       ORDER BY name`,
+      [warehouseId]
+    );
+
+    res.json({
+      warehouse: warehouse[0],
+      drivers: drivers
+    });
+  } catch (error) {
+    console.error('Get delivery drivers error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/warehouses/:warehouseId/delivery-drivers
+app.post('/api/warehouses/:warehouseId/delivery-drivers', authMiddleware, async (req, res) => {
+  try {
+    const { warehouseId } = req.params;
+    const { name, phone, balance = 0 } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    // Verify warehouse exists
+    const [warehouse] = await db.execute('SELECT id FROM warehouses WHERE id = ?', [warehouseId]);
+    if (warehouse.length === 0) {
+      return res.status(404).json({ error: 'Warehouse not found' });
+    }
+
+    // Create new delivery driver
+    const [result] = await db.execute(
+      `INSERT INTO delivery_drivers (name, phone, balance, status, warehouse_id, created_at)
+       VALUES (?, ?, ?, 1, ?, NOW())`,
+      [name, phone, balance, warehouseId]
+    );
+
+    // Get the created driver
+    const [newDriver] = await db.execute(
+      `SELECT id, name, phone, balance, status, warehouse_id, created_at
+       FROM delivery_drivers WHERE id = ?`,
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      message: 'Delivery driver created successfully',
+      driver: newDriver[0]
+    });
+  } catch (error) {
+    console.error('Create delivery driver error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PUT /api/delivery-drivers/:id
+app.put('/api/delivery-drivers/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, phone, balance, status } = req.body;
+
+    // Check if driver exists
+    const [existingDriver] = await db.execute('SELECT id, warehouse_id FROM delivery_drivers WHERE id = ?', [id]);
+    if (existingDriver.length === 0) {
+      return res.status(404).json({ error: 'Delivery driver not found' });
+    }
+
+    // Update driver
+    const updateFields = [];
+    const updateValues = [];
+
+    if (name !== undefined) {
+      updateFields.push('name = ?');
+      updateValues.push(name);
+    }
+    if (phone !== undefined) {
+      updateFields.push('phone = ?');
+      updateValues.push(phone);
+    }
+    if (balance !== undefined) {
+      updateFields.push('balance = ?');
+      updateValues.push(balance);
+    }
+    if (status !== undefined) {
+      updateFields.push('status = ?');
+      updateValues.push(status);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    updateFields.push('updated_at = NOW()');
+    updateValues.push(id);
+
+    await db.execute(
+      `UPDATE delivery_drivers SET ${updateFields.join(', ')} WHERE id = ?`,
+      updateValues
+    );
+
+    // Get updated driver
+    const [updatedDriver] = await db.execute(
+      `SELECT id, name, phone, balance, status, warehouse_id, created_at, updated_at
+       FROM delivery_drivers WHERE id = ?`,
+      [id]
+    );
+
+    res.json({
+      message: 'Delivery driver updated successfully',
+      driver: updatedDriver[0]
+    });
+  } catch (error) {
+    console.error('Update delivery driver error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// DELETE /api/delivery-drivers/:id
+app.delete('/api/delivery-drivers/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if driver exists
+    const [existingDriver] = await db.execute('SELECT id FROM delivery_drivers WHERE id = ?', [id]);
+
+    if (existingDriver.length === 0) {
+      return res.status(404).json({ error: 'Delivery driver not found' });
+    }
+
+    // Soft delete by setting status to 0
+    await db.execute('UPDATE delivery_drivers SET status = 0, updated_at = NOW() WHERE id = ?', [id]);
+
+    res.json({
+      message: 'Delivery driver deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete delivery driver error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Start server and initialize database
 const startServer = async () => {
   try {
