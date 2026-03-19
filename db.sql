@@ -407,6 +407,7 @@ CREATE TABLE `suppliers` (
   `phone` varchar(50) DEFAULT NULL,
   `balance` decimal(10,2) DEFAULT '0.00',
   `status` tinyint(1) DEFAULT '1',
+  `currency` enum('yuan','dollar','somoni') DEFAULT 'somoni',
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3;
@@ -415,10 +416,10 @@ CREATE TABLE `suppliers` (
 -- Дамп данных таблицы `suppliers`
 --
 
-INSERT INTO `suppliers` (`id`, `name`, `phone`, `balance`, `status`, `created_at`) VALUES
-(1, 'Поставщик 1', '987654321', '50.00', 1, '2026-01-22 13:33:45'),
-(2, 'Поставщик 2', '987654321', '0.00', 1, '2026-01-22 13:34:11'),
-(3, 'Поставшик1ц1ц', NULL, '0.00', 0, '2026-01-22 14:24:43');
+INSERT INTO `suppliers` (`id`, `name`, `phone`, `balance`, `status`, `currency`, `created_at`) VALUES
+(1, 'Поставщик 1', '987654321', '50.00', 1, 'somoni', '2026-01-22 13:33:45'),
+(2, 'Поставщик 2', '987654321', '0.00', 1, 'somoni', '2026-01-22 13:34:11'),
+(3, 'Поставшик1ц1ц', NULL, '0.00', 0, 'somoni', '2026-01-22 14:24:43');
 
 -- --------------------------------------------------------
 
@@ -449,6 +450,30 @@ INSERT INTO `supplier_operations` (`id`, `supplier_id`, `warehouse_id`, `sum`, `
 (4, 1, 11, '200.00', 'PAYMENT', '2026-01-23 03:29:16'),
 (5, 1, 11, '50.00', 'PAYMENT', '2026-01-23 03:30:33'),
 (6, 1, 11, '50.00', 'RECEIPT', '2026-01-23 03:34:42');
+
+-- --------------------------------------------------------
+
+--
+-- Структура таблицы `reseller_operations`
+--
+-- Создание: Мар 18 2026 г., 11:01
+--
+
+DROP TABLE IF EXISTS `reseller_operations`;
+CREATE TABLE `reseller_operations` (
+  `id` int NOT NULL,
+  `reseller_id` int NOT NULL,
+  `store_id` int DEFAULT NULL,
+  `sale_id` int DEFAULT NULL,
+  `sum` decimal(10,2) NOT NULL,
+  `type` enum('RECEIPT','SALE','PAYMENT_TO_RESELLER','PAYMENT_FROM_RESELLER','RETURN') NOT NULL,
+  `note` text,
+  `date` timestamp NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3;
+
+--
+-- Дамп данных таблицы `reseller_operations`
+--
 
 -- --------------------------------------------------------
 
@@ -676,6 +701,17 @@ ALTER TABLE `supplier_operations`
   ADD KEY `idx_type` (`type`);
 
 --
+-- Индексы таблицы `reseller_operations`
+--
+ALTER TABLE `reseller_operations`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `idx_reseller_id` (`reseller_id`),
+  ADD KEY `idx_store_id` (`store_id`),
+  ADD KEY `idx_sale_id` (`sale_id`),
+  ADD KEY `idx_date` (`date`),
+  ADD KEY `idx_type` (`type`);
+
+--
 -- Индексы таблицы `tokens`
 --
 ALTER TABLE `tokens`
@@ -786,6 +822,12 @@ ALTER TABLE `supplier_operations`
   MODIFY `id` int NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=7;
 
 --
+-- AUTO_INCREMENT для таблицы `reseller_operations`
+--
+ALTER TABLE `reseller_operations`
+  MODIFY `id` int NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=1;
+
+--
 -- AUTO_INCREMENT для таблицы `users`
 --
 ALTER TABLE `users`
@@ -886,6 +928,14 @@ ALTER TABLE `supplier_operations`
   ADD CONSTRAINT `supplier_operations_ibfk_1` FOREIGN KEY (`supplier_id`) REFERENCES `suppliers` (`id`),
   ADD CONSTRAINT `supplier_operations_ibfk_2` FOREIGN KEY (`warehouse_id`) REFERENCES `warehouses` (`id`),
   ADD CONSTRAINT `supplier_operations_ibfk_3` FOREIGN KEY (`receipt_id`) REFERENCES `stock_receipts` (`id`) ON DELETE SET NULL;
+
+--
+-- Ограничения внешнего ключа таблицы `reseller_operations`
+--
+ALTER TABLE `reseller_operations`
+  ADD CONSTRAINT `reseller_operations_ibfk_1` FOREIGN KEY (`reseller_id`) REFERENCES `resellers` (`id`),
+  ADD CONSTRAINT `reseller_operations_ibfk_2` FOREIGN KEY (`store_id`) REFERENCES `stores` (`id`),
+  ADD CONSTRAINT `reseller_operations_ibfk_3` FOREIGN KEY (`sale_id`) REFERENCES `sales` (`id`) ON DELETE SET NULL;
 
 --
 -- Ограничения внешнего ключа таблицы `tokens`

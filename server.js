@@ -179,7 +179,7 @@ app.post('/api/auth/register', authMiddleware, async (req, res) => {
 
     // Validate that store exists (if provided)
     if (store_id) {
-      const [store] = await db.execute('SELECT id FROM stores WHERE id = ?', [store_id]);
+      const [store] = await db.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [store_id]);
       if (store.length === 0) {
         return res.status(400).json({ error: 'Store not found' });
       }
@@ -350,19 +350,21 @@ app.post('/api/products', upload.single('image'), authMiddleware, async (req, re
     // Set default notification threshold to 10 if not provided
     const threshold = notification_threshold !== undefined ? parseInt(notification_threshold, 10) : 10;
 
-    // Check if product_code already exists
-    const [existingProduct] = await db.execute(
-      'SELECT id FROM products WHERE product_code = ?',
-      [product_code]
-    );
+    // Check if product_code already exists (only if product_code is provided)
+    if (product_code) {
+      const [existingProduct] = await db.execute(
+        'SELECT id FROM products WHERE product_code = ?',
+        [product_code]
+      );
 
-    if (existingProduct.length > 0) {
-      return res.status(400).json({ error: 'Product code must be unique' });
+      if (existingProduct.length > 0) {
+        return res.status(400).json({ error: 'Product code must be unique' });
+      }
     }
 
     const [result] = await db.execute(
       'INSERT INTO products (name, manufacturer, product_code, image, notification_threshold) VALUES (?, ?, ?, ?, ?)',
-      [name, manufacturer || null, product_code, image, threshold]
+      [name, manufacturer || null, product_code || null, image, threshold]
     );
 
     res.status(201).json({
@@ -682,7 +684,7 @@ app.put('/api/warehouses/:id', authMiddleware, async (req, res) => {
 // POST /api/suppliers
 app.post('/api/suppliers', authMiddleware, async (req, res) => {
   try {
-    const { name, phone, balance, status, warehouse_id } = req.body;
+    const { name, phone, balance, status, warehouse_id, currency } = req.body;
 
     // Validate required fields
     if (!name) {
@@ -693,6 +695,11 @@ app.post('/api/suppliers', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Warehouse ID is required' });
     }
 
+    // Validate currency if provided
+    if (currency && !['yuan', 'dollar', 'somoni'].includes(currency)) {
+      return res.status(400).json({ error: 'Invalid currency. Must be yuan, dollar, or somoni' });
+    }
+
     // Validate that warehouse exists
     const [warehouse] = await db.execute('SELECT id FROM warehouses WHERE id = ?', [warehouse_id]);
     if (warehouse.length === 0) {
@@ -700,8 +707,8 @@ app.post('/api/suppliers', authMiddleware, async (req, res) => {
     }
 
     const [result] = await db.execute(
-      'INSERT INTO suppliers (name, phone, balance, status, warehouse_id) VALUES (?, ?, ?, ?, ?)',
-      [name, phone || null, balance || 0, status !== undefined ? status : 1, warehouse_id]
+      'INSERT INTO suppliers (name, phone, balance, status, warehouse_id, currency) VALUES (?, ?, ?, ?, ?, ?)',
+      [name, phone || null, balance || 0, status !== undefined ? status : 1, warehouse_id, currency || 'somoni']
     );
 
     res.status(201).json({
@@ -711,6 +718,7 @@ app.post('/api/suppliers', authMiddleware, async (req, res) => {
       balance: balance || 0,
       status: status !== undefined ? status : 1,
       warehouse_id,
+      currency: currency || 'somoni',
       message: 'Supplier created successfully'
     });
   } catch (error) {
@@ -723,7 +731,7 @@ app.post('/api/suppliers', authMiddleware, async (req, res) => {
 app.get('/api/suppliers', authMiddleware, async (req, res) => {
   try {
     const [rows] = await db.execute(
-      'SELECT id, name, phone, balance, status, warehouse_id, created_at, updated_at FROM suppliers WHERE status IN (1) ORDER BY name'
+      'SELECT id, name, phone, balance, status, warehouse_id, currency, created_at, updated_at FROM suppliers WHERE status IN (1) ORDER BY name'
     );
     res.json(rows);
   } catch (error) {
@@ -738,7 +746,7 @@ app.get('/api/suppliers/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
 
     const [rows] = await db.execute(
-      'SELECT id, name, phone, balance, status, warehouse_id, created_at, updated_at FROM suppliers WHERE id = ?',
+      'SELECT id, name, phone, balance, status, warehouse_id, currency, created_at, updated_at FROM suppliers WHERE id = ?',
       [id]
     );
 
@@ -757,7 +765,7 @@ app.get('/api/suppliers/:id', authMiddleware, async (req, res) => {
 app.put('/api/suppliers/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, phone, balance, status, warehouse_id } = req.body;
+    const { name, phone, balance, status, warehouse_id, currency } = req.body;
 
     // Validate required fields
     if (!name) {
@@ -768,22 +776,30 @@ app.put('/api/suppliers/:id', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Warehouse ID is required' });
     }
 
+    // Validate currency if provided
+    if (currency && !['yuan', 'dollar', 'somoni'].includes(currency)) {
+      return res.status(400).json({ error: 'Invalid currency. Must be yuan, dollar, or somoni' });
+    }
+
     // Validate that warehouse exists
     const [warehouse] = await db.execute('SELECT id FROM warehouses WHERE id = ?', [warehouse_id]);
     if (warehouse.length === 0) {
       return res.status(400).json({ error: 'Warehouse not found' });
     }
 
-    // Check if supplier exists
-    const [existingSupplier] = await db.execute('SELECT id FROM suppliers WHERE id = ?', [id]);
+    // Check if supplier exists and get current currency
+    const [existingSupplier] = await db.execute('SELECT id, currency FROM suppliers WHERE id = ?', [id]);
 
     if (existingSupplier.length === 0) {
       return res.status(404).json({ error: 'Supplier not found' });
     }
 
+    // Use existing currency if not provided in update
+    const finalCurrency = currency !== undefined ? currency : existingSupplier[0].currency;
+
     const [result] = await db.execute(
-      'UPDATE suppliers SET name = ?, phone = ?, balance = ?, status = ?, warehouse_id = ? WHERE id = ?',
-      [name, phone || null, balance !== undefined ? balance : 0, status !== undefined ? status : 1, warehouse_id, id]
+      'UPDATE suppliers SET name = ?, phone = ?, balance = ?, status = ?, warehouse_id = ?, currency = ? WHERE id = ?',
+      [name, phone || null, balance !== undefined ? balance : 0, status !== undefined ? status : 1, warehouse_id, finalCurrency, id]
     );
 
     if (result.affectedRows === 0) {
@@ -791,7 +807,7 @@ app.put('/api/suppliers/:id', authMiddleware, async (req, res) => {
     }
 
     const [updatedSupplier] = await db.execute(
-      'SELECT id, name, phone, balance, status, warehouse_id, created_at, updated_at FROM suppliers WHERE id = ?',
+      'SELECT id, name, phone, balance, status, warehouse_id, currency, created_at, updated_at FROM suppliers WHERE id = ?',
       [id]
     );
 
@@ -978,7 +994,7 @@ app.put('/api/stores/:id', authMiddleware, async (req, res) => {
     }
 
     // Check if store exists
-    const [existingStore] = await db.execute('SELECT id FROM stores WHERE id = ?', [id]);
+    const [existingStore] = await db.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [id]);
     if (existingStore.length === 0) {
       return res.status(404).json({ error: 'Store not found' });
     }
@@ -1022,7 +1038,7 @@ app.delete('/api/stores/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
 
     // Check if store exists
-    const [existingStore] = await db.execute('SELECT id FROM stores WHERE id = ?', [id]);
+    const [existingStore] = await db.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [id]);
 
     if (existingStore.length === 0) {
       return res.status(404).json({ error: 'Store not found' });
@@ -1310,7 +1326,7 @@ app.get('/api/suppliers/:supplierId/operations', authMiddleware, async (req, res
     const { warehouseId, type, limit } = req.query;
 
     // Verify supplier exists
-    const [supplier] = await db.execute('SELECT id, name, phone, balance FROM suppliers WHERE id = ? AND status = 1', [supplierId]);
+    const [supplier] = await db.execute('SELECT id, name, phone, balance, currency FROM suppliers WHERE id = ? AND status = 1', [supplierId]);
     if (supplier.length === 0) {
       return res.status(404).json({ error: 'Supplier not found' });
     }
@@ -1357,6 +1373,76 @@ app.get('/api/suppliers/:supplierId/operations', authMiddleware, async (req, res
   }
 });
 
+// GET /api/suppliers/stats/payment-summary - Get supplier payment and receipt statistics
+app.get('/api/suppliers/stats/payment-summary', authMiddleware, async (req, res) => {
+  try {
+    const { warehouse_id, start_date, end_date } = req.query;
+    
+    // Build query with optional filters
+    let whereConditions = ['s.status = 1'];
+    let params = [];
+    
+    if (warehouse_id) {
+      whereConditions.push('(so.warehouse_id = ? OR (so.warehouse_id IS NULL AND s.warehouse_id = ?))');
+      params.push(parseInt(warehouse_id, 10), parseInt(warehouse_id, 10));
+    }
+    
+    if (start_date) {
+      whereConditions.push('so.date >= ?');
+      params.push(start_date);
+    }
+    
+    if (end_date) {
+      whereConditions.push('so.date <= ?');
+      params.push(end_date);
+    }
+    
+    const whereClause = whereConditions.join(' AND ');
+    
+    // Get statistics by supplier
+    const query = `
+      SELECT 
+        s.id as supplier_id,
+        s.name as supplier_name,
+        s.currency,
+        COALESCE(SUM(CASE WHEN so.type = 'RECEIPT' THEN so.sum ELSE 0 END), 0) as total_receipts,
+        COALESCE(SUM(CASE WHEN so.type = 'PAYMENT' THEN so.sum ELSE 0 END), 0) as total_payments,
+        (COALESCE(SUM(CASE WHEN so.type = 'RECEIPT' THEN so.sum ELSE 0 END), 0) - 
+         COALESCE(SUM(CASE WHEN so.type = 'PAYMENT' THEN so.sum ELSE 0 END), 0)) as remaining_balance,
+        COUNT(CASE WHEN so.type = 'RECEIPT' THEN 1 END) as receipt_count,
+        COUNT(CASE WHEN so.type = 'PAYMENT' THEN 1 END) as payment_count
+      FROM suppliers s
+      LEFT JOIN supplier_operations so ON s.id = so.supplier_id
+      WHERE ${whereClause}
+      GROUP BY s.id, s.name, s.currency
+      ORDER BY remaining_balance DESC
+    `;
+    
+    const [results] = await db.execute(query, params);
+    
+    // Calculate grand totals
+    const grandTotals = results.reduce((acc, row) => ({
+      total_receipts: acc.total_receipts + parseFloat(row.total_receipts),
+      total_payments: acc.total_payments + parseFloat(row.total_payments),
+      remaining_balance: acc.remaining_balance + parseFloat(row.remaining_balance)
+    }), { total_receipts: 0, total_payments: 0, remaining_balance: 0 });
+    
+    res.json({
+      summary: {
+        total_receipts: grandTotals.total_receipts,
+        total_payments: grandTotals.total_payments,
+        remaining_balance: grandTotals.remaining_balance,
+        active_suppliers: results.length
+      },
+      suppliers: results
+    });
+    
+  } catch (error) {
+    console.error('Get supplier payment stats error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // GET /api/warehouses/:warehouseId/suppliers
 app.get('/api/warehouses/:warehouseId/suppliers', authMiddleware, async (req, res) => {
   try {
@@ -1370,7 +1456,7 @@ app.get('/api/warehouses/:warehouseId/suppliers', authMiddleware, async (req, re
 
     // Get suppliers that are directly assigned to this warehouse
     const [suppliers] = await db.execute(
-      `SELECT id, name, phone, balance, status, warehouse_id, created_at, updated_at
+      `SELECT id, name, phone, balance, status, warehouse_id, currency, created_at, updated_at
        FROM suppliers 
        WHERE warehouse_id = ? AND status = 1
        ORDER BY name`,
@@ -1786,7 +1872,7 @@ app.post('/api/customers', authMiddleware, authorizeStoreAccess(false), async (r
     }
 
     // Validate that store exists
-    const [store] = await db.execute('SELECT id FROM stores WHERE id = ?', [actualStoreId]);
+    const [store] = await db.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [actualStoreId]);
     if (store.length === 0) {
       return res.status(400).json({ error: 'Store not found' });
     }
@@ -1867,7 +1953,7 @@ app.put('/api/customers/:id', authMiddleware, async (req, res) => {
     }
 
     // Validate that store exists
-    const [store] = await db.execute('SELECT id FROM stores WHERE id = ?', [store_id]);
+    const [store] = await db.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [store_id]);
     if (store.length === 0) {
       return res.status(400).json({ error: 'Store not found' });
     }
@@ -2115,7 +2201,7 @@ app.post('/api/customers/:id/payment', authMiddleware, async (req, res) => {
 
     // Validate store if provided
     if (store_id) {
-      const [store] = await db.execute('SELECT id FROM stores WHERE id = ?', [store_id]);
+      const [store] = await db.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [store_id]);
       if (store.length === 0) {
         return res.status(400).json({ error: 'Store not found' });
       }
@@ -2180,11 +2266,11 @@ app.get('/api/retail-debtors', authMiddleware, async (req, res) => {
 
     const [debtors] = await db.execute(`
       SELECT 
-        rd.id,
+        MIN(rd.id) as id,
         rd.customer_name,
         rd.phone,
         rd.store_id,
-        rd.created_at,
+        MIN(rd.created_at) as created_at,
         SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) as total_debt,
         SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END) as total_paid,
         (SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) - 
@@ -2192,7 +2278,7 @@ app.get('/api/retail-debtors', authMiddleware, async (req, res) => {
       FROM retail_debtors rd
       LEFT JOIN retail_operations ro ON rd.id = ro.retail_debtor_id
       ${storeFilter}
-      GROUP BY rd.id, rd.customer_name, rd.phone, rd.store_id, rd.created_at
+      GROUP BY rd.customer_name, rd.phone, rd.store_id
       HAVING remaining_balance > 0
       ORDER BY remaining_balance DESC
     `, params);
@@ -2230,7 +2316,7 @@ app.post('/api/retail-debtors', authMiddleware, async (req, res) => {
 
       // Validate that store exists (if provided)
       if (actualStoreId) {
-        const [storeCheck] = await connection.execute('SELECT id FROM stores WHERE id = ?', [actualStoreId]);
+        const [storeCheck] = await connection.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [actualStoreId]);
         if (storeCheck.length === 0) {
           await connection.rollback();
           connection.release();
@@ -2277,33 +2363,42 @@ app.get('/api/retail-debtors/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [debtor] = await db.execute(`
+    // First get the debtor info by ID to get customer_name
+    const [debtorInfo] = await db.execute(`
+      SELECT customer_name, phone, store_id
+      FROM retail_debtors 
+      WHERE id = ?
+    `, [id]);
+
+    if (debtorInfo.length === 0) {
+      return res.status(404).json({ error: 'Retail debtor not found' });
+    }
+
+    const debtor = debtorInfo[0];
+
+    // Restrict access for non-admins to their store
+    if (req.user.role !== 'ADMIN' && debtor.store_id !== req.userStoreId) {
+      return res.status(404).json({ error: 'Retail debtor not found' });
+    }
+
+    // Get aggregated stats for all debtors with this customer_name
+    const [debtorStats] = await db.execute(`
       SELECT 
-        rd.id,
         rd.customer_name,
         rd.phone,
         rd.store_id,
-        rd.created_at,
+        MIN(rd.created_at) as created_at,
         SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) as total_debt,
         SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END) as total_paid,
         (SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) - 
          SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END)) as remaining_balance
       FROM retail_debtors rd
       LEFT JOIN retail_operations ro ON rd.id = ro.retail_debtor_id
-      WHERE rd.id = ?
-      GROUP BY rd.id, rd.customer_name, rd.phone, rd.store_id, rd.created_at
-    `, [id]);
+      WHERE rd.customer_name = ? AND rd.store_id = ?
+      GROUP BY rd.customer_name, rd.phone, rd.store_id
+    `, [debtor.customer_name, debtor.store_id]);
 
-    if (debtor.length === 0) {
-      return res.status(404).json({ error: 'Retail debtor not found' });
-    }
-
-    // Restrict access for non-admins to their store
-    if (req.user.role !== 'ADMIN' && debtor[0].store_id !== req.userStoreId) {
-      return res.status(404).json({ error: 'Retail debtor not found' });
-    }
-
-    // Получаем историю операций
+    // Получаем историю операций для всех должников с этим именем
     const [operations] = await db.execute(`
       SELECT 
         ro.id,
@@ -2315,12 +2410,15 @@ app.get('/api/retail-debtors/:id', authMiddleware, async (req, res) => {
         s.total_amount as sale_amount
       FROM retail_operations ro
       LEFT JOIN sales s ON ro.sale_id = s.id
-      WHERE ro.retail_debtor_id = ?
+      WHERE ro.retail_debtor_id IN (
+        SELECT id FROM retail_debtors 
+        WHERE customer_name = ? AND store_id = ?
+      )
       ORDER BY ro.created_at DESC
-    `, [id]);
+    `, [debtor.customer_name, debtor.store_id]);
 
     res.json({
-      ...debtor[0],
+      ...debtorStats[0],
       operations
     });
   } catch (error) {
@@ -3441,7 +3539,7 @@ app.post('/api/expenses', authMiddleware, async (req, res) => {
     }
 
     // Validate store_id exists
-    const [storeResult] = await db.execute('SELECT id FROM stores WHERE id = ?', [store_id]);
+    const [storeResult] = await db.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [store_id]);
     if (storeResult.length === 0) {
       return res.status(400).json({ error: 'Store not found' });
     }
@@ -3557,7 +3655,7 @@ app.put('/api/expenses/:id', authMiddleware, async (req, res) => {
 
     if (store_id !== undefined) {
       // Validate store_id exists
-      const [storeResult] = await db.execute('SELECT id FROM stores WHERE id = ?', [store_id]);
+      const [storeResult] = await db.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [store_id]);
       if (storeResult.length === 0) {
         return res.status(400).json({ error: 'Store not found' });
       }
@@ -3718,14 +3816,23 @@ app.get('/api/stores/:id/financial-summary', authMiddleware, async (req, res) =>
        WHERE rd.store_id = ? AND rd.id IN (SELECT DISTINCT retail_debtor_id FROM retail_operations)`
      , [storeId]);
 
+    // Get reseller sales and payments for this store from reseller_operations
+    const [resellerSalesResult] = await db.execute(
+      `SELECT COALESCE(SUM(CASE WHEN type IN ('SALE', 'PAYMENT_FROM_RESELLER') THEN sum ELSE 0 END), 0) as reseller_sales 
+       FROM reseller_operations 
+       WHERE store_id = ? AND type IN ('SALE', 'PAYMENT_FROM_RESELLER')${dateCondition}`,
+      [storeId, ...dateParams]
+    );
+
     // Calculate final values
     const cashSales = parseFloat(cashSalesResult[0].cash_sales);
     const paidDebts = parseFloat(paidDebtsResult[0].paid_debts);
+    const resellerSales = parseFloat(resellerSalesResult[0].reseller_sales);
     const customerDebtBalance = parseFloat(customerDebtsResult[0].customer_debt_balance);
     const retailDebtBalance = parseFloat(retailDebtsResult[0].retail_debt_balance);
 
     // Apply correct business logic formulas
-    const totalSales = cashSales + paidDebts;  // Cash sales + paid debts and customer payments
+    const totalSales = cashSales + paidDebts + resellerSales;  // Cash sales + paid debts/customer payments + reseller sales/payments
     const totalDebts = customerDebtBalance + retailDebtBalance;  // Customer + retail debts
 
     // Get total expenses - separate date filtering for expenses table
@@ -3760,6 +3867,7 @@ app.get('/api/stores/:id/financial-summary', authMiddleware, async (req, res) =>
       breakdown: {
         cash_sales: parseFloat(cashSales.toFixed(2)),
         paid_debts: parseFloat(paidDebts.toFixed(2)),
+        reseller_sales: parseFloat(resellerSales.toFixed(2)),
         customer_debt_balance: parseFloat(customerDebtBalance.toFixed(2)),
         retail_debt_balance: parseFloat(retailDebtBalance.toFixed(2))
       }
@@ -3779,6 +3887,7 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
     // Build date condition
     let dateCondition = '';
     let salesDateCondition = '';
+    let resellerDateCondition = '';
     const dateParams = [];
 
     // Filter by month and year
@@ -3786,16 +3895,19 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
       // Filter by specific month and year
       dateCondition = ' AND YEAR(co.date) = ? AND MONTH(co.date) = ?';
       salesDateCondition = ' AND YEAR(s.created_at) = ? AND MONTH(s.created_at) = ?';
+      resellerDateCondition = ' AND YEAR(date) = ? AND MONTH(date) = ?';
       dateParams.push(parseInt(year, 10), parseInt(month, 10));
     } else if (month) {
       // Filter by month only (current year assumed)
       dateCondition = ' AND MONTH(co.date) = ? AND YEAR(co.date) = YEAR(CURDATE())';
       salesDateCondition = ' AND MONTH(s.created_at) = ? AND YEAR(s.created_at) = YEAR(CURDATE())';
+      resellerDateCondition = ' AND MONTH(date) = ? AND YEAR(date) = YEAR(CURDATE())';
       dateParams.push(parseInt(month, 10));
     } else if (year) {
       // Filter by year only
       dateCondition = ' AND YEAR(co.date) = ?';
       salesDateCondition = ' AND YEAR(s.created_at) = ?';
+      resellerDateCondition = ' AND YEAR(date) = ?';
       dateParams.push(parseInt(year, 10));
     }
     // If no filters, get all data
@@ -3815,7 +3927,7 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
     // Get paid debts and customer payments per store from customer_operations (type IN ('PAID','PAYMENT'))
     const [paidDebtsResult] = await db.execute(
       `SELECT store_id, COALESCE(SUM(sum), 0) as paid_debts
-       FROM customer_operations
+       FROM customer_operations co
        WHERE store_id IS NOT NULL AND type IN ('PAID','PAYMENT')${dateCondition}
        GROUP BY store_id`,
       dateParams
@@ -3837,6 +3949,15 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
        JOIN sales s ON ro.sale_id = s.id
        WHERE s.store_id IS NOT NULL
        GROUP BY s.store_id`
+    );
+
+    // Get reseller sales and payments per store from reseller_operations
+    const [resellerSalesResult] = await db.execute(
+      `SELECT store_id, COALESCE(SUM(CASE WHEN type IN ('SALE', 'PAYMENT_FROM_RESELLER') THEN sum ELSE 0 END), 0) as reseller_sales
+       FROM reseller_operations
+       WHERE store_id IS NOT NULL AND type IN ('SALE', 'PAYMENT_FROM_RESELLER')${resellerDateCondition}
+       GROUP BY store_id`,
+      dateParams
     );
 
     // Get expense data for all stores
@@ -3885,16 +4006,22 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
       expensesMap[row.store_id] = parseFloat(row.total_expenses);
     });
 
+    const resellerSalesMap = {};
+    resellerSalesResult.forEach(row => {
+      resellerSalesMap[row.store_id] = parseFloat(row.reseller_sales);
+    });
+
     // Build response for all stores mirroring single-store output
     const storeStats = storesResult.map(store => {
       const storeId = store.id;
       const cashSales = cashSalesMap[storeId] || 0;
       const paidDebts = paidDebtsMap[storeId] || 0;
+      const resellerSales = resellerSalesMap[storeId] || 0;
       const customerDebtBalance = customerDebtMap[storeId] || 0;
       const retailDebtBalance = retailDebtMap[storeId] || 0;
       const totalExpenses = expensesMap[storeId] || 0;
 
-      const totalSales = cashSales + paidDebts; // Cash sales + paid debts/payments
+      const totalSales = cashSales + paidDebts + resellerSales; // Cash sales + paid debts/payments + reseller sales/payments
       const totalDebts = customerDebtBalance + retailDebtBalance;
 
       return {
@@ -3906,6 +4033,7 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
         breakdown: {
           cash_sales: parseFloat(cashSales.toFixed(2)),
           paid_debts: parseFloat(paidDebts.toFixed(2)),
+          reseller_sales: parseFloat(resellerSales.toFixed(2)),
           customer_debt_balance: parseFloat(customerDebtBalance.toFixed(2)),
           retail_debt_balance: parseFloat(retailDebtBalance.toFixed(2))
         }
@@ -3918,6 +4046,404 @@ app.get('/api/stores/financial-summary', authMiddleware, async (req, res) => {
     });
   } catch (error) {
     console.error('Get all stores financial summary error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Reseller Management Routes
+
+// POST /api/resellers
+app.post('/api/resellers', authMiddleware, async (req, res) => {
+  try {
+    const { name, phone, balance, status, store_id } = req.body;
+
+    // Validate required fields
+    if (!name) {
+      return res.status(400).json({ error: 'Reseller name is required' });
+    }
+
+    if (!store_id) {
+      return res.status(400).json({ error: 'Store ID is required' });
+    }
+
+    // Validate that store exists
+    const [store] = await db.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [store_id]);
+    if (store.length === 0) {
+      return res.status(400).json({ error: 'Store not found' });
+    }
+
+    const [result] = await db.execute(
+      'INSERT INTO resellers (name, phone, balance, status, store_id) VALUES (?, ?, ?, ?, ?)',
+      [name, phone || null, balance || 0, status !== undefined ? status : 1, store_id]
+    );
+
+    res.status(201).json({
+      id: result.insertId,
+      name,
+      phone,
+      balance: balance || 0,
+      status: status !== undefined ? status : 1,
+      store_id,
+      message: 'Reseller created successfully'
+    });
+  } catch (error) {
+    console.error('Add reseller error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/resellers/:id
+app.get('/api/resellers/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await db.execute(
+      'SELECT id, name, phone, balance, status, store_id, created_at, updated_at FROM resellers WHERE id = ?',
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Reseller not found' });
+    }
+
+    res.json(rows[0]);
+  } catch (error) {
+    console.error('Get reseller error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PUT /api/resellers/:id
+app.put('/api/resellers/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, phone, balance, status, store_id } = req.body;
+
+    // Validate required fields
+    if (!name) {
+      return res.status(400).json({ error: 'Reseller name is required' });
+    }
+
+    if (!store_id) {
+      return res.status(400).json({ error: 'Store ID is required' });
+    }
+
+    // Validate that store exists
+    const [store] = await db.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [store_id]);
+    if (store.length === 0) {
+      return res.status(400).json({ error: 'Store not found' });
+    }
+
+    // Check if reseller exists
+    const [existingReseller] = await db.execute('SELECT id FROM resellers WHERE id = ?', [id]);
+
+    if (existingReseller.length === 0) {
+      return res.status(404).json({ error: 'Reseller not found' });
+    }
+
+    const [result] = await db.execute(
+      'UPDATE resellers SET name = ?, phone = ?, balance = ?, status = ?, store_id = ? WHERE id = ?',
+      [name, phone || null, balance !== undefined ? balance : 0, status !== undefined ? status : 1, store_id, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Reseller not found' });
+    }
+
+    const [updatedReseller] = await db.execute(
+      'SELECT id, name, phone, balance, status, store_id, created_at, updated_at FROM resellers WHERE id = ?',
+      [id]
+    );
+
+    res.json({
+      ...updatedReseller[0],
+      message: 'Reseller updated successfully'
+    });
+  } catch (error) {
+    console.error('Update reseller error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/resellers/:id/payment
+app.post('/api/resellers/:id/payment', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amount, store_id, note, payment_type } = req.body;
+
+    // Validate required fields
+    if (!amount) {
+      return res.status(400).json({ error: 'Amount is required' });
+    }
+
+    if (!payment_type || !['PAYMENT_TO_RESELLER', 'PAYMENT_FROM_RESELLER'].includes(payment_type)) {
+      return res.status(400).json({ error: 'payment_type must be PAYMENT_TO_RESELLER or PAYMENT_FROM_RESELLER' });
+    }
+
+    // Check if reseller exists
+    const [existingReseller] = await db.execute('SELECT id, balance FROM resellers WHERE id = ? AND status = 1', [id]);
+
+    if (existingReseller.length === 0) {
+      return res.status(404).json({ error: 'Reseller not found' });
+    }
+
+    // Validate store if provided and get warehouse_id\r\n    let storeId = null;\r\n    let warehouseId = null;
+    if (store_id) {
+      const [store] = await db.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [store_id]);
+      if (store.length === 0) {
+        return res.status(400).json({ error: 'Store not found' });
+      }
+      storeId = store_id;
+      warehouseId = store[0].warehouse_id;
+    }
+
+    // Update reseller balance based on payment direction
+    let newBalance;
+    if (payment_type === 'PAYMENT_TO_RESELLER') {
+      // You pay reseller - decrease your debt (reseller's balance decreases)
+      newBalance = parseFloat(existingReseller[0].balance) - parseFloat(amount);
+    } else {
+      // Reseller pays you - decrease reseller's debt (reseller's balance increases)
+      newBalance = parseFloat(existingReseller[0].balance) + parseFloat(amount);
+    }
+    
+    await db.execute('UPDATE resellers SET balance = ? WHERE id = ?', [newBalance, id]);
+
+    // Record the payment operation
+    const [result] = await db.execute(
+      'INSERT INTO reseller_operations (reseller_id, store_id, sum, type, note) VALUES (?, ?, ?, ?, ?)',
+      [id, storeId, amount, payment_type, note || null]
+    );
+
+    res.json({
+      operation_id: result.insertId,
+      reseller_id: id,
+      amount: amount,
+      payment_type: payment_type,
+      new_balance: newBalance,
+      message: 'Payment recorded successfully'
+    });
+  } catch (error) {
+    console.error('Record reseller payment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/resellers/:id/operations - Create operation (RECEIPT, SALE, RETURN) with items
+app.post('/api/resellers/:id/operations', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { type, amount, store_id, note, items } = req.body;
+
+    // Validate required fields
+    if (!type || !['RECEIPT', 'SALE', 'RETURN'].includes(type)) {
+      return res.status(400).json({ error: 'Type must be RECEIPT, SALE, or RETURN' });
+    }
+
+    // Check if reseller exists
+    const [existingReseller] = await db.execute('SELECT id, balance FROM resellers WHERE id = ? AND status = 1', [id]);
+
+    if (existingReseller.length === 0) {
+      return res.status(404).json({ error: 'Reseller not found' });
+    }
+
+    // Validate store if provided and get warehouse_id\r\n    let storeId = null;\r\n    let warehouseId = null;
+    if (store_id) {
+      const [store] = await db.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [store_id]);
+      if (store.length === 0) {
+        return res.status(400).json({ error: 'Store not found' });
+      }
+      storeId = store_id;
+      warehouseId = store[0].warehouse_id;
+    }
+
+    // Calculate total amount from items (required)
+    let totalAmount = 0;
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items array is required' });
+    }
+    
+    totalAmount = items.reduce((sum, item) => {
+      const qty = parseFloat(item.quantity) || 0;
+      const price = parseFloat(item.price) || 0;
+      return sum + (qty * price);
+    }, 0);
+
+    // Update reseller balance based on operation type
+    let newBalance;
+    if (type === 'RECEIPT') {
+      // You receive goods from reseller - you owe them (balance increases)
+      newBalance = parseFloat(existingReseller[0].balance) + totalAmount;
+    } else if (type === 'SALE') {
+      // You sell goods to reseller - they owe you (balance decreases)
+      newBalance = parseFloat(existingReseller[0].balance) - totalAmount;
+    } else if (type === 'RETURN') {
+      // Return - decreases balance (either direction depending on context)
+      newBalance = parseFloat(existingReseller[0].balance) - totalAmount;
+    }
+
+    await db.execute('UPDATE resellers SET balance = ? WHERE id = ?', [newBalance, id]);
+
+    // Record the operation
+    const [result] = await db.execute(
+      'INSERT INTO reseller_operations (reseller_id, store_id, sum, type, note) VALUES (?, ?, ?, ?, ?)',
+      [id, storeId, totalAmount, type, note || null]
+    );
+
+    const operationId = result.insertId;
+
+    // If items provided, update stock and record items
+    if (items && Array.isArray(items) && items.length > 0) {
+      for (const item of items) {
+        const productId = item.product_id;
+        const quantity = parseFloat(item.quantity) || 0;
+        const price = parseFloat(item.price) || 0;
+        const total = quantity * price;
+
+        // Validate product exists
+        const [product] = await db.execute('SELECT id, name FROM products WHERE id = ?', [productId]);
+        if (product.length === 0) {
+          continue; // Skip invalid products
+        }
+
+        if (type === 'RECEIPT') {
+          // Add stock when receiving from reseller
+          await db.execute(
+            'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE total_pieces = total_pieces + ?',
+            [warehouseId, productId, quantity, quantity]
+          );
+        } else if (type === 'SALE') {
+          // Remove stock when selling to reseller
+          await db.execute(
+            'UPDATE warehouse_stock SET total_pieces = total_pieces - ? WHERE product_id = ? AND warehouse_id = ?',
+            [quantity, productId, warehouseId]
+          );
+        } else if (type === 'RETURN') {
+          // Add stock back on return
+          await db.execute(
+            'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE total_pieces = total_pieces + ?',
+            [warehouseId, productId, quantity, quantity]
+          );
+        }
+      }
+    }
+
+    res.json({
+      operation_id: operationId,
+      reseller_id: id,
+      type: type,
+      amount: totalAmount,
+      items_count: items ? items.length : 0,
+      new_balance: newBalance,
+      message: 'Operation recorded successfully'
+    });
+  } catch (error) {
+    console.error('Record reseller operation error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/resellers/:id/operations - Get operation history
+app.get('/api/resellers/:id/operations', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { type, store_id, limit = 50 } = req.query;
+
+    // Check if reseller exists
+    const [existingReseller] = await db.execute('SELECT id, name, balance FROM resellers WHERE id = ?', [id]);
+
+    if (existingReseller.length === 0) {
+      return res.status(404).json({ error: 'Reseller not found' });
+    }
+
+    // Build query with optional filters
+    let query = `SELECT ro.id, ro.reseller_id, ro.store_id, ro.sum, ro.type, ro.note, ro.date, s.name as store_name FROM reseller_operations ro LEFT JOIN stores s ON ro.store_id = s.id WHERE ro.reseller_id = ?`;
+    let params = [parseInt(id, 10)];
+    
+    console.log('Request params:', { id, type, store_id, limit });
+    console.log('Initial params:', params);
+
+    if (type) {
+      const validTypes = ['RECEIPT', 'SALE', 'PAYMENT_TO_RESELLER', 'PAYMENT_FROM_RESELLER', 'RETURN'];
+      if (!validTypes.includes(type)) {
+        return res.status(400).json({ error: 'Invalid type parameter' });
+      }
+      query += ' AND ro.type = ?';
+      params.push(type);
+    }
+
+    if (store_id) {
+      query += ' AND ro.store_id = ?';
+      params.push(parseInt(store_id, 10));
+    }
+
+    query += ' ORDER BY ro.date DESC LIMIT 50';
+
+    console.log('Final query:', query);
+    console.log('Final params:', params);
+
+    const [operations] = await db.execute(query, params);
+
+    res.json({
+      reseller: existingReseller[0],
+      operations: operations
+    });
+  } catch (error) {
+    console.error('Get reseller operations error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// DELETE /api/resellers/:id (soft delete)
+app.delete('/api/resellers/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if reseller exists
+    const [existingReseller] = await db.execute('SELECT id FROM resellers WHERE id = ?', [id]);
+
+    if (existingReseller.length === 0) {
+      return res.status(404).json({ error: 'Reseller not found' });
+    }
+
+    // Soft delete by setting status to 0
+    await db.execute('UPDATE resellers SET status = 0 WHERE id = ?', [id]);
+
+    res.json({
+      message: 'Reseller deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete reseller error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/stores/:storeId/resellers
+app.get('/api/stores/:storeId/resellers', authMiddleware, async (req, res) => {
+  try {
+    const { storeId } = req.params;
+
+    // Verify store exists
+    const [store] = await db.execute('SELECT id, name FROM stores WHERE id = ?', [storeId]);
+    if (store.length === 0) {
+      return res.status(404).json({ error: 'Store not found' });
+    }
+
+    // Get resellers that are directly assigned to this store
+    const [resellers] = await db.execute(
+      `SELECT id, name, phone, balance, status, store_id, created_at, updated_at
+       FROM resellers 
+       WHERE store_id = ? AND status = 1
+       ORDER BY name`,
+      [storeId]
+    );
+
+    res.json({
+      store: store[0],
+      resellers: resellers
+    });
+  } catch (error) {
+    console.error('Get store resellers error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3941,3 +4467,4 @@ const startServer = async () => {
 startServer();
 
 module.exports = app;
+

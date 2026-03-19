@@ -1347,7 +1347,8 @@
   "phone": "+79991234567" (необязательно),
   "balance": 1000.50 (необязательно, по умолчанию 0),
   "status": 1 (необязательно, по умолчанию 1 - активен, 0 - неактивен),
-  "warehouse_id": 1 (обязательно)
+  "warehouse_id": 1 (обязательно),
+  "currency": "somoni" (необязательно, по умолчанию somoni, варианты: yuan, dollar, somoni)
 }
 ```
 **Ответ:**
@@ -1359,6 +1360,7 @@
   "balance": 1000.50,
   "status": 1,
   "warehouse_id": 1,
+  "currency": "somoni",
   "message": "Supplier created successfully"
 }
 ```
@@ -1380,6 +1382,7 @@
     "balance": 1000.50,
     "status": 1,
     "warehouse_id": 1,
+    "currency": "somoni",
     "created_at": "2023-01-01T00:00:00.000Z",
     "updated_at": "2023-01-01T00:00:00.000Z"
   }
@@ -1401,6 +1404,7 @@
   "balance": 1000.50,
   "status": 1,
   "warehouse_id": 1,
+  "currency": "somoni",
   "created_at": "2023-01-01T00:00:00.000Z",
   "updated_at": "2023-01-01T00:00:00.000Z"
 }
@@ -1419,7 +1423,8 @@
   "phone": "+79997654321" (необязательно),
   "balance": 2000.75 (необязательно),
   "status": 0 (необязательно, 1 - активен, 0 - неактивен),
-  "warehouse_id": 1 (обязательно)
+  "warehouse_id": 1 (обязательно),
+  "currency": "dollar" (необязательно, по умолчанию somoni, варианты: yuan, dollar, somoni)
 }
 ```
 **Ответ:**
@@ -1431,6 +1436,7 @@
   "balance": 2000.75,
   "status": 0,
   "warehouse_id": 1,
+  "currency": "dollar",
   "created_at": "2023-01-01T00:00:00.000Z",
   "updated_at": "2023-01-02T00:00:00.000Z",
   "message": "Supplier updated successfully"
@@ -1488,7 +1494,8 @@
     "id": 1,
     "name": "Supplier Name",
     "phone": "+79991234567",
-    "balance": 1000.50
+    "balance": 1000.50,
+    "currency": "somoni"
   },
   "operations": [
     {
@@ -1546,6 +1553,7 @@
       "balance": 1000.50,
       "status": 1,
       "warehouse_id": 1,
+      "currency": "somoni",
       "created_at": "2023-01-01T00:00:00.000Z",
       "updated_at": "2023-01-01T00:00:00.000Z"
     }
@@ -1553,7 +1561,223 @@
 }
 ```
 
-## 12. Управление розничными должниками
+## 12. Реселлеры
+
+### POST /api/resellers
+**Назначение:** Создание нового реселлера  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Тело запроса:**
+```json
+{
+  "name": "Имя реселлера",
+  "phone": "+79991234567",
+  "balance": 0,
+  "status": 1,
+  "store_id": 1
+}
+```
+**Ответ (успешный):**
+```json
+{
+  "id": 1,
+  "name": "Имя реселлера",
+  "phone": "+79991234567",
+  "balance": 0,
+  "status": 1,
+  "store_id": 1,
+  "message": "Reseller created successfully"
+}
+```
+
+### GET /api/resellers/:id
+**Назначение:** Получение информации о конкретном реселлере  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Ответ:**
+```json
+{
+  "id": 1,
+  "name": "Имя реселлера",
+  "phone": "+79991234567",
+  "balance": 0,
+  "status": 1,
+  "store_id": 1,
+  "created_at": "2023-01-01T00:00:00.000Z",
+  "updated_at": "2023-01-01T00:00:00.000Z"
+}
+```
+
+### PUT /api/resellers/:id
+**Назначение:** Обновление информации о реселлере  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Тело запроса:**
+```json
+{
+  "name": "Новое имя",
+  "phone": "+79997654321",
+  "balance": 1000.00,
+  "status": 1,
+  "store_id": 1
+}
+```
+**Ответ:**
+```json
+{
+  "id": 1,
+  "name": "Новое имя",
+  "phone": "+79997654321",
+  "balance": 1000.00,
+  "status": 1,
+  "store_id": 1,
+  "message": "Reseller updated successfully"
+}
+```
+
+### POST /api/resellers/:id/operations
+**Назначение:** Создание операции с реселлером (RECEIPT, SALE, RETURN) со списком товаров  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `id` - ID реселлера
+**Тело запроса:**
+```json
+{
+  "type": "RECEIPT",
+  "store_id": 1,
+  "note": "Комментарий",
+  "items": [
+    {
+      "product_id": 1,
+      "quantity": 10,
+      "price": 100.00
+    },
+    {
+      "product_id": 2,
+      "quantity": 5,
+      "price": 50.00
+    }
+  ]
+}
+```
+**Параметры товаров (items):**
+- `product_id` - ID товара (обязательно)
+- `quantity` - Количество (обязательно)
+- `price` - Цена за единицу (обязательно)
+
+**Ответ:**
+```json
+{
+  "operation_id": 1,
+  "reseller_id": 1,
+  "type": "RECEIPT",
+  "amount": 1250.00,
+  "items_count": 2,
+  "new_balance": 1250.00,
+  "message": "Operation recorded successfully"
+}
+```
+**Типы операций:**
+- `RECEIPT` - Приход от реселлера (вы берете товары у реселлера, склад пополняется)
+- `SALE` - Продажа реселлеру (он берет товары у вас, склад уменьшается)
+- `RETURN` - Возврат товаров (товары возвращаются на склад)
+
+### POST /api/resellers/:id/payment
+**Назначение:** Запись оплаты реселлеру или от реселлера  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `id` - ID реселлера
+**Тело запроса:**
+```json
+{
+  "amount": 500.00,
+  "payment_type": "PAYMENT_TO_RESELLER",
+  "store_id": 1,
+  "note": "Оплата за товары"
+}
+```
+**Ответ:**
+```json
+{
+  "operation_id": 2,
+  "reseller_id": 1,
+  "amount": 500.00,
+  "payment_type": "PAYMENT_TO_RESELLER",
+  "new_balance": 500.00,
+  "message": "Payment recorded successfully"
+}
+```
+**Типы оплат:**
+- `PAYMENT_TO_RESELLER` - Вы платите реселлеру
+- `PAYMENT_FROM_RESELLER` - Реселлер платит вам
+
+### GET /api/resellers/:id/operations
+**Назначение:** Получение истории операций с реселлером  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `id` - ID реселлера
+**Query параметры:**
+- `type` - Фильтр по типу операции
+- `store_id` - Фильтр по магазину
+- `limit` - Количество записей (по умолчанию 50)
+**Ответ:**
+```json
+{
+  "reseller": {
+    "id": 1,
+    "name": "Реселлер 1",
+    "balance": 500.00
+  },
+  "operations": [
+    {
+      "id": 1,
+      "reseller_id": 1,
+      "store_id": 1,
+      "store_name": "Магазин",
+      "sum": 1000.00,
+      "type": "RECEIPT",
+      "note": "Закупка",
+      "date": "2023-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+### DELETE /api/resellers/:id
+**Назначение:** Удаление реселлера (мягкое удаление)  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Ответ:**
+```json
+{
+  "message": "Reseller deleted successfully"
+}
+```
+
+### GET /api/stores/:storeId/resellers
+**Назначение:** Получение списка реселлеров магазина  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Ответ:**
+```json
+{
+  "store": {
+    "id": 1,
+    "name": "Магазин"
+  },
+  "resellers": [
+    {
+      "id": 1,
+      "name": "Реселлер 1",
+      "phone": "+79991234567",
+      "balance": 500.00,
+      "status": 1,
+      "store_id": 1
+    }
+  ]
 
 ### GET /api/retail-debtors
 **Назначение:** Получение списка всех розничных должников с непогашенными долгами  
@@ -1565,7 +1789,6 @@
 ```json
 [
   {
-    "id": 1,
     "customer_name": "Иван Петров",
     "phone": "+79991234567",
     "store_id": 1,
@@ -1576,6 +1799,11 @@
   }
 ]
 ```
+**Примечания:**
+- Должники группируются по имени клиента - если у клиента несколько записей, они объединяются в одну
+- `total_debt` - общая сумма всех долгов клиента
+- `total_paid` - общая сумма всех оплат клиента
+- `remaining_balance` - итоговый баланс клиента (total_debt - total_paid)
 
 ### POST /api/retail-debtors
 **Назначение:** Создание нового розничного должника и фиксация долга  
@@ -1597,21 +1825,6 @@
   "id": 1,
   "customer_name": "Иван Петров",
   "phone": "+79991234567",
-  "store_id": 1,
-  "message": "Retail debtor created successfully"
-}
-```
-
-### GET /api/retail-debtors/:id
-**Назначение:** Получение информации о конкретном розничном должнике с историей операций  
-**Заголовки:**
-- `Authorization: Bearer <токен>`
-**Параметры:**
-- `id` - ID розничного должника
-**Ответ:**
-```json
-{
-  "id": 1,
   "customer_name": "Иван Петров",
   "phone": "+79991234567",
   "store_id": 1,
@@ -1641,11 +1854,10 @@
   ]
 }
 ```
-
-### POST /api/retail-debtors/:id/payments
-**Назначение:** Запись оплаты по долгам розничного должника  
-**Заголовки:**
-- `Authorization: Bearer <токен>`
+**Примечания:**
+- Эндпоинт находит клиента по ID, получает его имя, затем показывает агрегированные данные и ВСЕ операции для всех записей с таким же именем
+- Если у клиента несколько записей, они объединяются в один ответ с общими итогами и всеми операциями
+- `total_debt`, `total_paid`, `remaining_balance` - общие суммы по всем записям клиента с этим именем
 **Параметры:**
 - `id` - ID розничного должника
 **Тело запроса:**
@@ -2080,3 +2292,68 @@
 {
   "error": "Store not found"
 }
+```
+
+### GET /api/suppliers/stats/payment-summary
+**Назначение:** Получение статистики по приходам и оплатам поставщиков  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Query параметры (опциональные):**
+- `warehouse_id` - Фильтр по складу
+- `start_date` - Начало периода (YYYY-MM-DD)
+- `end_date` - Конец периода (YYYY-MM-DD)
+**Ответ:**
+```json
+{
+  "summary": {
+    "total_receipts": 5000.00,
+    "total_payments": 3750.00,
+    "remaining_balance": 1250.00,
+    "active_suppliers": 3
+  },
+  "suppliers": [
+    {
+      "supplier_id": 1,
+      "supplier_name": "Поставщик 1",
+      "currency": "somoni",
+      "total_receipts": 3000.00,
+      "total_payments": 2000.00,
+      "remaining_balance": 1000.00,
+      "receipt_count": 5,
+      "payment_count": 3
+    },
+    {
+      "supplier_id": 2,
+      "supplier_name": "Поставщик 2",
+      "currency": "dollar",
+      "total_receipts": 2000.00,
+      "total_payments": 1750.00,
+      "remaining_balance": 250.00,
+      "receipt_count": 3,
+      "payment_count": 4
+    }
+  ]
+}
+```
+**Описание полей:**
+- `summary` - Общая сводка по всем поставщикам:
+  - `total_receipts` - Общая сумма приходов (на сколько заказали)
+  - `total_payments` - Общая сумма оплат (сколько оплатили)
+  - `remaining_balance` - Общая сумма к оплате (приходы - оплаты)
+  - `active_suppliers` - Количество активных поставщиков с операциями
+- `suppliers` - Детализация по каждому поставщику:
+  - `supplier_id` - ID поставщика
+  - `supplier_name` - Имя поставщика
+  - `currency` - Валюта поставщика (yuan, dollar, somoni)
+  - `total_receipts` - Сумма приходов поставщика
+  - `total_payments` - Сумма оплат поставщика
+  - `remaining_balance` - Остаток к оплате поставщика
+  - `receipt_count` - Количество приходов
+  - `payment_count` - Количество оплат
+
+**Примечания:**
+- Учитываются все поставщики
+- `remaining_balance` = total_receipts - total_payments
+- Результаты отсортированы по убыванию остатка к оплате
+- Позволяет фильтровать по складу и временному периоду
+- Возвращаются все поставщики (включая тех у кого нет операций)
