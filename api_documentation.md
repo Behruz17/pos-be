@@ -573,6 +573,7 @@
 {
   "warehouse_id": 1,
   "supplier_id": 1 (обязательно),
+  "delivery_driver_id": 2 (опционально),
   "items": [
     {
       "product_id": 1,
@@ -618,6 +619,8 @@
     "warehouse_name": "Main Warehouse",
     "supplier_id": 1,
     "supplier_name": "Supplier Name",
+    "delivery_driver_id": 2,
+    "delivery_driver_name": "Доставщик2",
     "created_by": 1,
     "created_by_name": "admin",
     "created_at": "2023-01-01T00:00:00.000Z",
@@ -640,6 +643,8 @@
   "warehouse_name": "Main Warehouse",
   "supplier_id": 1,
   "supplier_name": "Supplier Name",
+  "delivery_driver_id": 2,
+  "delivery_driver_name": "Доставщик2",
   "created_by": 1,
   "created_by_name": "admin",
   "created_at": "2023-01-01T00:00:00.000Z",
@@ -2476,3 +2481,144 @@
 **Примечания:**
 - Используется мягкое удаление - статус устанавливается в 0
 - Доставщик остается в базе данных, но становится неактивным
+
+## 14. Операции доставки
+
+### GET /api/delivery-operations/:driver_id
+**Назначение:** Получение всех операций водителя доставки  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `driver_id` - ID водителя доставки
+- `type` (опционально) - Фильтр по типу операции ('RECEIPT' или 'PAYMENT')
+- `start_date` (опционально) - Фильтр от указанной даты
+- `end_date` (опционально) - Фильтр до указанной даты
+**Ответ:**
+```json
+[
+  {
+    "id": 1,
+    "delivery_driver_id": 1,
+    "stock_receipt_id": 15,
+    "sum": "1500.00",
+    "currency": "somoni",
+    "type": "RECEIPT",
+    "date": "2026-03-19T21:50:00.000Z",
+    "driver_name": "Иван Петров",
+    "receipt_amount": "25000.00"
+  },
+  {
+    "id": 2,
+    "delivery_driver_id": 1,
+    "stock_receipt_id": null,
+    "sum": "1000.00",
+    "currency": null,
+    "type": "PAYMENT",
+    "date": "2026-03-19T22:15:00.000Z",
+    "driver_name": "Иван Петров",
+    "receipt_amount": null
+  }
+]
+```
+**Примечания:**
+- Операции отсортированы по дате (новые первые)
+- Включает информацию о связанных приходах для операций типа RECEIPT
+
+### PUT /api/delivery-operations/receipt/:receipt_id/delivery-cost
+**Назначение:** Обновление стоимости доставки и валюты для существующего прихода  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `receipt_id` - ID прихода товара
+**Тело запроса:**
+```json
+{
+  "delivery_cost": 1500,
+  "currency": "somoni",
+  "delivery_driver_id": 1
+}
+```
+**Ответ:**
+```json
+{
+  "message": "Delivery cost updated successfully",
+  "delivery_cost": 1500,
+  "currency": "somoni",
+  "receipt_id": 15,
+  "new_balance": 2500.00
+}
+```
+**Ошибки:**
+- `400 Bad Request`: Если стоимость доставки <= 0 или не указан ID водителя
+- `404 Not Found`: Если приход не найден или у него нет водителя
+**Примечания:**
+- Если операция доставки уже существует - обновляется сумма и валюта
+- Если операции нет - создается новая с указанными параметрами
+- Поле `currency` опционально, по умолчанию NULL
+
+### POST /api/delivery-operations/:driver_id/payment
+**Назначение:** Запись оплаты водителю доставки  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `driver_id` - ID водителя доставки
+**Тело запроса:**
+```json
+{
+  "amount": 1000,
+  "note": "Оплата за март"
+}
+```
+**Ответ:**
+```json
+{
+  "id": 25,
+  "message": "Payment recorded successfully",
+  "payment": {
+    "delivery_driver_id": 1,
+    "amount": 1000,
+    "note": "Оплата за март",
+    "balance": 500
+  }
+}
+```
+**Ошибки:**
+- `400 Bad Request`: Если сумма <= 0
+- `404 Not Found`: Если водитель не найден или неактивен
+**Примечания:**
+- Автоматически рассчитывается и возвращается обновленный баланс водителя
+- Создается операция типа PAYMENT без привязки к конкретному приходу
+
+### GET /api/delivery-operations/:driver_id/statistics
+**Назначение:** Получение статистики по операциям водителя доставки  
+**Заголовки:**
+- `Authorization: Bearer <токен>`
+**Параметры:**
+- `driver_id` - ID водителя доставки
+**Ответ:**
+```json
+{
+  "driver": {
+    "id": 1,
+    "name": "Иван Петров"
+  },
+  "statistics": {
+    "total_receipts": 5,
+    "total_payments": 3,
+    "total_receipt_amount": 7500,
+    "total_payment_amount": 5000,
+    "balance": 2500
+  }
+}
+```
+**Поля ответа:**
+- `total_receipts` - Количество операций прихода (доставок)
+- `total_payments` - Количество операций оплаты
+- `total_receipt_amount` - Общая сумма приходов (стоимости доставок)
+- `total_payment_amount` - Общая сумма оплат
+- `balance` - Текущий баланс (приходы - оплаты)
+**Ошибки:**
+- `404 Not Found`: Если водитель не найден или неактивен
+**Примечания:**
+- Баланс рассчитывается как сумма всех RECEIPT минус сумма всех PAYMENT
+- Включает информацию о водителе для удобства

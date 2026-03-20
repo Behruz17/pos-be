@@ -1142,7 +1142,7 @@ app.get('/api/warehouses/:warehouseId/products/:productId', authMiddleware, asyn
 // POST /api/inventory/receipt
 app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
   try {
-    const { warehouse_id, supplier_id, items } = req.body;
+    const { warehouse_id, supplier_id, delivery_driver_id, items } = req.body;
 
     // Validate required fields
     if (!warehouse_id || !items || !Array.isArray(items) || items.length === 0) {
@@ -1157,6 +1157,14 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
     const [supplier] = await db.execute('SELECT id FROM suppliers WHERE id = ? AND status = 1', [supplier_id]);
     if (supplier.length === 0) {
       return res.status(400).json({ error: 'Supplier not found or inactive' });
+    }
+
+    // Validate delivery_driver_id if provided
+    if (delivery_driver_id) {
+      const [driver] = await db.execute('SELECT id FROM delivery_drivers WHERE id = ? AND status = 1', [delivery_driver_id]);
+      if (driver.length === 0) {
+        return res.status(400).json({ error: 'Delivery driver not found or inactive' });
+      }
     }
 
     // Validate each item
@@ -1174,10 +1182,10 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
       // Calculate total amount from item amounts
       const total_amount = items.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
 
-      // Create stock receipt
+      // Create stock receipt (with delivery_driver_id if provided)
       const [receiptResult] = await connection.execute(
-        'INSERT INTO stock_receipts (warehouse_id, created_by, total_amount, supplier_id) VALUES (?, ?, ?, ?)',
-        [warehouse_id, req.user.id, total_amount, supplier_id || null]
+        'INSERT INTO stock_receipts (warehouse_id, created_by, total_amount, supplier_id, delivery_driver_id) VALUES (?, ?, ?, ?, ?)',
+        [warehouse_id, req.user.id, total_amount, supplier_id || null, delivery_driver_id || null]
       );
       const receiptId = receiptResult.insertId;
 
@@ -1279,6 +1287,14 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
         'INSERT INTO supplier_operations (supplier_id, warehouse_id, receipt_id, sum, type) VALUES (?, ?, ?, ?, ?)',
         [supplier_id, warehouse_id, receiptId, total_amount, 'RECEIPT']
       );
+
+      // If delivery driver is specified, create a delivery_operations record with sum = 0
+      if (delivery_driver_id) {
+        await connection.execute(
+          'INSERT INTO delivery_operations (delivery_driver_id, stock_receipt_id, sum, currency, type) VALUES (?, ?, ?, ?, ?)',
+          [delivery_driver_id, receiptId, 0.00, null, 'RECEIPT']
+        );
+      }
 
       // Commit transaction
       await connection.commit();
@@ -4605,6 +4621,283 @@ app.delete('/api/delivery-drivers/:id', authMiddleware, async (req, res) => {
 });
 
 // Start server and initialize database
+
+// Delivery Operations Routes
+
+// GET /api/delivery-operations/:driver_id - Get driver operations with optional filters
+app.get('/api/delivery-operations/:driver_id', authMiddleware, async (req, res) => {
+  try {
+    const { driver_id } = req.params;
+    const { type, start_date, end_date } = req.query;
+
+    // Verify driver exists
+    const [driver] = await db.execute(
+      'SELECT id, name FROM delivery_drivers WHERE id = ? AND status = 1',
+      [driver_id]
+    );
+    if (driver.length === 0) {
+      return res.status(404).json({ error: 'Delivery driver not found' });
+    }
+
+    // Build query based on filters
+    let query = `SELECT do.id, do.delivery_driver_id, do.stock_receipt_id, do.sum, do.currency, do.type, do.date, do.note,
+                    dd.name as driver_name, sr.total_amount as receipt_amount
+             FROM delivery_operations do
+             LEFT JOIN delivery_drivers dd ON do.delivery_driver_id = dd.id
+             LEFT JOIN stock_receipts sr ON do.stock_receipt_id = sr.id
+             WHERE do.delivery_driver_id = ?`;
+
+    const queryParams = [driver_id];
+
+    // Add type filter if provided
+    if (type) {
+      query += ' AND do.type = ?';
+      queryParams.push(type);
+    }
+
+    // Add date range filters if provided
+    if (start_date) {
+      query += ' AND do.date >= ?';
+      queryParams.push(start_date);
+    }
+
+    if (end_date) {
+      query += ' AND do.date <= ?';
+      queryParams.push(end_date);
+    }
+
+    query += ' ORDER BY do.date DESC';
+
+    const [operations] = await db.execute(query, queryParams);
+
+    res.json(operations);
+  } catch (error) {
+    console.error('Get delivery operations error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PUT /api/delivery-operations/receipt/:receipt_id/delivery-cost - Update delivery cost for a receipt
+app.put('/api/delivery-operations/receipt/:receipt_id/delivery-cost', authMiddleware, async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const { receipt_id } = req.params;
+    const { delivery_cost, currency, delivery_driver_id } = req.body;
+
+    if (delivery_cost === undefined || delivery_cost === null) {
+      return res.status(400).json({ error: 'delivery_cost is required' });
+    }
+
+    if (!delivery_driver_id) {
+      return res.status(400).json({ error: 'delivery_driver_id is required' });
+    }
+
+    await connection.beginTransaction();
+
+    // Check if receipt exists
+    const [receipt] = await connection.execute(
+      'SELECT id, delivery_driver_id FROM stock_receipts WHERE id = ?',
+      [receipt_id]
+    );
+
+    if (receipt.length === 0) {
+      await connection.rollback();
+      connection.release();
+      return res.status(404).json({ error: 'Receipt not found' });
+    }
+
+    // Verify driver exists
+    const [driver] = await connection.execute(
+      'SELECT id FROM delivery_drivers WHERE id = ? AND status = 1',
+      [delivery_driver_id]
+    );
+    if (driver.length === 0) {
+      await connection.rollback();
+      connection.release();
+      return res.status(404).json({ error: 'Delivery driver not found' });
+    }
+
+    // Check if a RECEIPT operation already exists for this receipt
+    const [existingOp] = await connection.execute(
+      'SELECT id, currency FROM delivery_operations WHERE stock_receipt_id = ? AND type = ?',
+      [receipt_id, 'RECEIPT']
+    );
+
+    if (existingOp.length > 0) {
+      // Update existing operation - use provided currency or keep existing one
+      const finalCurrency = currency !== undefined ? currency : existingOp[0].currency;
+      await connection.execute(
+        'UPDATE delivery_operations SET sum = ?, currency = ?, delivery_driver_id = ? WHERE id = ?',
+        [delivery_cost, finalCurrency, delivery_driver_id, existingOp[0].id]
+      );
+    } else {
+      // Create new RECEIPT operation
+      await connection.execute(
+        'INSERT INTO delivery_operations (delivery_driver_id, stock_receipt_id, sum, currency, type) VALUES (?, ?, ?, ?, ?)',
+        [delivery_driver_id, receipt_id, delivery_cost, currency || null, 'RECEIPT']
+      );
+    }
+
+    // Update the receipt's delivery_driver_id if different
+    if (receipt[0].delivery_driver_id !== delivery_driver_id) {
+      await connection.execute(
+        'UPDATE stock_receipts SET delivery_driver_id = ? WHERE id = ?',
+        [delivery_driver_id, receipt_id]
+      );
+    }
+
+    // Update driver balance
+    const [balanceResult] = await connection.execute(
+      `SELECT 
+        COALESCE(SUM(CASE WHEN type = 'RECEIPT' THEN sum ELSE 0 END), 0) - 
+        COALESCE(SUM(CASE WHEN type = 'PAYMENT' THEN sum ELSE 0 END), 0) as balance
+       FROM delivery_operations 
+       WHERE delivery_driver_id = ?`,
+      [delivery_driver_id]
+    );
+
+    const newBalance = parseFloat(balanceResult[0].balance);
+    
+    // Update the driver's balance in delivery_drivers table
+    await connection.execute(
+      'UPDATE delivery_drivers SET balance = ? WHERE id = ?',
+      [newBalance, delivery_driver_id]
+    );
+
+    await connection.commit();
+    connection.release();
+
+    res.json({
+      message: 'Delivery cost updated successfully',
+      delivery_cost: delivery_cost,
+      currency: currency !== undefined ? currency : existingOp[0]?.currency,
+      receipt_id: parseInt(receipt_id),
+      new_balance: newBalance
+    });
+  } catch (error) {
+    await connection.rollback();
+    connection.release();
+    console.error('Update delivery cost error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/delivery-operations/:driver_id/payment - Record payment to driver
+app.post('/api/delivery-operations/:driver_id/payment', authMiddleware, async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const { driver_id } = req.params;
+    const { amount, note } = req.body;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Valid amount is required' });
+    }
+
+    await connection.beginTransaction();
+
+    // Verify driver exists
+    const [driver] = await connection.execute(
+      'SELECT id, name, balance FROM delivery_drivers WHERE id = ? AND status = 1',
+      [driver_id]
+    );
+    if (driver.length === 0) {
+      await connection.rollback();
+      connection.release();
+      return res.status(404).json({ error: 'Delivery driver not found' });
+    }
+
+    // Create PAYMENT operation (no stock_receipt_id for payments)
+    const [result] = await connection.execute(
+      'INSERT INTO delivery_operations (delivery_driver_id, stock_receipt_id, sum, type, note) VALUES (?, NULL, ?, ?, ?)',
+      [driver_id, amount, 'PAYMENT', note || null]
+    );
+
+    // Get current balance calculation
+    const [balanceResult] = await connection.execute(
+      `SELECT 
+        COALESCE(SUM(CASE WHEN type = 'RECEIPT' THEN sum ELSE 0 END), 0) - 
+        COALESCE(SUM(CASE WHEN type = 'PAYMENT' THEN sum ELSE 0 END), 0) as balance
+       FROM delivery_operations 
+       WHERE delivery_driver_id = ?`,
+      [driver_id]
+    );
+
+    const currentBalance = parseFloat(balanceResult[0].balance);
+    
+    // Update driver's balance in delivery_drivers table
+    await connection.execute(
+      'UPDATE delivery_drivers SET balance = ? WHERE id = ?',
+      [currentBalance, driver_id]
+    );
+
+    await connection.commit();
+    connection.release();
+
+    res.status(201).json({
+      id: result.insertId,
+      message: 'Payment recorded successfully',
+      payment: {
+        delivery_driver_id: parseInt(driver_id),
+        amount: amount,
+        note: note || null,
+        balance: currentBalance
+      }
+    });
+  } catch (error) {
+    await connection.rollback();
+    connection.release();
+    console.error('Record delivery payment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/delivery-operations/:driver_id/statistics - Get driver statistics
+app.get('/api/delivery-operations/:driver_id/statistics', authMiddleware, async (req, res) => {
+  try {
+    const { driver_id } = req.params;
+
+    // Verify driver exists
+    const [driver] = await db.execute(
+      'SELECT id, name FROM delivery_drivers WHERE id = ? AND status = 1',
+      [driver_id]
+    );
+    if (driver.length === 0) {
+      return res.status(404).json({ error: 'Delivery driver not found' });
+    }
+
+    // Get statistics
+    const [stats] = await db.execute(
+      `SELECT 
+        COUNT(CASE WHEN type = 'RECEIPT' THEN 1 END) as total_receipts,
+        COUNT(CASE WHEN type = 'PAYMENT' THEN 1 END) as total_payments,
+        COALESCE(SUM(CASE WHEN type = 'RECEIPT' THEN sum ELSE 0 END), 0) as total_receipt_amount,
+        COALESCE(SUM(CASE WHEN type = 'PAYMENT' THEN sum ELSE 0 END), 0) as total_payment_amount,
+        (COALESCE(SUM(CASE WHEN type = 'RECEIPT' THEN sum ELSE 0 END), 0) - 
+         COALESCE(SUM(CASE WHEN type = 'PAYMENT' THEN sum ELSE 0 END), 0)) as balance
+       FROM delivery_operations 
+       WHERE delivery_driver_id = ?`,
+      [driver_id]
+    );
+
+    res.json({
+      driver: {
+        id: parseInt(driver_id),
+        name: driver[0].name
+      },
+      statistics: {
+        total_receipts: stats[0].total_receipts,
+        total_payments: stats[0].total_payments,
+        total_receipt_amount: parseFloat(stats[0].total_receipt_amount),
+        total_payment_amount: parseFloat(stats[0].total_payment_amount),
+        balance: parseFloat(stats[0].balance)
+      }
+    });
+  } catch (error) {
+    console.error('Get driver statistics error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 const startServer = async () => {
   try {
     // Test database connection
