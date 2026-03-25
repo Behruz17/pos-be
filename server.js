@@ -4108,6 +4108,83 @@ app.post('/api/resellers', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/resellers/statistics - Get statistics for all resellers
+app.get('/api/resellers/statistics', authMiddleware, authorizeStoreAccess(true), async (req, res) => {
+  try {
+    // Determine store_id for filtering
+    const storeId = req.user.role === 'ADMIN' && req.query.store_id 
+      ? parseInt(req.query.store_id) 
+      : req.userStoreId;
+
+    // Build WHERE condition for store filtering
+    const storeCondition = storeId ? `AND store_id = ${storeId}` : '';
+    
+    // Get total receipts from reseller_operations (на сколько я взял у реселлера)
+    const [totalReceiptsResult] = await db.execute(
+      `SELECT COALESCE(SUM(CASE WHEN type = 'RECEIPT' THEN sum ELSE 0 END), 0) as total_receipts
+       FROM reseller_operations WHERE 1=1 ${storeCondition}`
+    );
+
+    // Get total sales from reseller_operations (на сколько я продал реселлеру)
+    const [totalSalesResult] = await db.execute(
+      `SELECT COALESCE(SUM(CASE WHEN type = 'SALE' THEN sum ELSE 0 END), 0) as total_sales
+       FROM reseller_operations WHERE 1=1 ${storeCondition}`
+    );
+
+    // Get total payments made by me to resellers (сколько я ему заплатил)
+    const [myPaymentsResult] = await db.execute(
+      `SELECT COALESCE(SUM(CASE WHEN type = 'PAYMENT_TO_RESELLER' THEN sum ELSE 0 END), 0) as my_payments
+       FROM reseller_operations WHERE 1=1 ${storeCondition}`
+    );
+
+    // Get total payments made by resellers to me (сколько он мне заплатил)
+    const [resellerPaymentsResult] = await db.execute(
+      `SELECT COALESCE(SUM(CASE WHEN type = 'PAYMENT_FROM_RESELLER' THEN sum ELSE 0 END), 0) as reseller_payments
+       FROM reseller_operations WHERE 1=1 ${storeCondition}`
+    );
+
+    // Get total debt balance (сумма всех текущих балансов реселлеров)
+    const [totalDebtResult] = await db.execute(
+      `SELECT COALESCE(SUM(balance), 0) as total_debt_balance
+       FROM resellers WHERE status = 1 ${storeId ? `AND store_id = ${storeId}` : ''}`
+    );
+
+    // Get count of active resellers
+    const [resellerCountResult] = await db.execute(
+      `SELECT COUNT(*) as active_resellers
+       FROM resellers WHERE status = 1 ${storeId ? `AND store_id = ${storeId}` : ''}`
+    );
+
+    const totalReceipts = parseFloat(totalReceiptsResult[0].total_receipts);
+    const totalSales = parseFloat(totalSalesResult[0].total_sales);
+    const myPayments = parseFloat(myPaymentsResult[0].my_payments);
+    const resellerPayments = parseFloat(resellerPaymentsResult[0].reseller_payments);
+    const totalDebtBalance = parseFloat(totalDebtResult[0].total_debt_balance);
+    const activeResellers = parseInt(resellerCountResult[0].active_resellers);
+
+    res.json({
+      summary: {
+        total_receipts: parseFloat(totalReceipts.toFixed(2)),
+        total_sales: parseFloat(totalSales.toFixed(2)),
+        my_payments: parseFloat(myPayments.toFixed(2)),
+        reseller_payments: parseFloat(resellerPayments.toFixed(2)),
+        total_debt_balance: parseFloat(totalDebtBalance.toFixed(2)),
+        active_resellers: activeResellers
+      },
+      breakdown: {
+        receipts_from_operations: parseFloat(totalReceipts.toFixed(2)),
+        sales_from_operations: parseFloat(totalSales.toFixed(2)),
+        payments_made_to_resellers: parseFloat(myPayments.toFixed(2)),
+        payments_received_from_resellers: parseFloat(resellerPayments.toFixed(2)),
+        outstanding_debt_balance: parseFloat(totalDebtBalance.toFixed(2))
+      }
+    });
+  } catch (error) {
+    console.error('Get resellers statistics error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // GET /api/resellers/:id
 app.get('/api/resellers/:id', authMiddleware, async (req, res) => {
   try {
