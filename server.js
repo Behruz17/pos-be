@@ -1291,8 +1291,8 @@ app.post('/api/inventory/receipt', authMiddleware, async (req, res) => {
       // If delivery driver is specified, create a delivery_operations record with sum = 0
       if (delivery_driver_id) {
         await connection.execute(
-          'INSERT INTO delivery_operations (delivery_driver_id, stock_receipt_id, sum, currency, type) VALUES (?, ?, ?, ?, ?)',
-          [delivery_driver_id, receiptId, 0.00, null, 'RECEIPT']
+          'INSERT INTO delivery_operations (delivery_driver_id, stock_receipt_id, sum, currency, rate, converted_sum, type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [delivery_driver_id, receiptId, 0.00, null, null, null, 'RECEIPT']
         );
       }
 
@@ -4717,7 +4717,7 @@ app.get('/api/delivery-operations/:driver_id', authMiddleware, async (req, res) 
     }
 
     // Build query based on filters
-    let query = `SELECT do.id, do.delivery_driver_id, do.stock_receipt_id, do.sum, do.currency, do.type, do.date, do.note,
+    let query = `SELECT do.id, do.delivery_driver_id, do.stock_receipt_id, do.sum, do.currency, do.rate, do.converted_sum, do.type, do.date, do.note,
                     dd.name as driver_name, sr.total_amount as receipt_amount
              FROM delivery_operations do
              LEFT JOIN delivery_drivers dd ON do.delivery_driver_id = dd.id
@@ -4759,21 +4759,31 @@ app.put('/api/delivery-operations/receipt/:receipt_id/delivery-cost', authMiddle
   const connection = await db.getConnection();
   try {
     const { receipt_id } = req.params;
-    const { delivery_cost, currency, delivery_driver_id } = req.body;
+    const { delivery_cost, currency, rate, delivery_driver_id } = req.body;
 
     if (delivery_cost === undefined || delivery_cost === null) {
-      return res.status(400).json({ error: 'delivery_cost is required' });
+      await connection.rollback();
+      connection.release();
+      return res.status(400).json({ error: 'Delivery cost is required' });
     }
 
-    if (!delivery_driver_id) {
-      return res.status(400).json({ error: 'delivery_driver_id is required' });
+    if (delivery_cost <= 0) {
+      await connection.rollback();
+      connection.release();
+      return res.status(400).json({ error: 'Delivery cost must be greater than 0' });
+    }
+
+    if (rate !== undefined && rate !== null && rate <= 0) {
+      await connection.rollback();
+      connection.release();
+      return res.status(400).json({ error: 'Rate must be greater than 0' });
     }
 
     await connection.beginTransaction();
 
     // Check if receipt exists
     const [receipt] = await connection.execute(
-      'SELECT id, delivery_driver_id FROM stock_receipts WHERE id = ?',
+      'SELECT id, delivery_driver_id, total_amount FROM stock_receipts WHERE id = ?',
       [receipt_id]
     );
 
@@ -4796,7 +4806,7 @@ app.put('/api/delivery-operations/receipt/:receipt_id/delivery-cost', authMiddle
 
     // Check if a RECEIPT operation already exists for this receipt
     const [existingOp] = await connection.execute(
-      'SELECT id, currency FROM delivery_operations WHERE stock_receipt_id = ? AND type = ?',
+      'SELECT id, currency, rate, converted_sum FROM delivery_operations WHERE stock_receipt_id = ? AND type = ?',
       [receipt_id, 'RECEIPT']
     );
 
@@ -4804,14 +4814,15 @@ app.put('/api/delivery-operations/receipt/:receipt_id/delivery-cost', authMiddle
       // Update existing operation - use provided currency or keep existing one
       const finalCurrency = currency !== undefined ? currency : existingOp[0].currency;
       await connection.execute(
-        'UPDATE delivery_operations SET sum = ?, currency = ?, delivery_driver_id = ? WHERE id = ?',
-        [delivery_cost, finalCurrency, delivery_driver_id, existingOp[0].id]
+        'UPDATE delivery_operations SET sum = ?, currency = ?, rate = ?, converted_sum = ?, delivery_driver_id = ? WHERE id = ?',
+        [delivery_cost, finalCurrency, rate || null, rate ? (receipt[0].total_amount / rate) : null, delivery_driver_id, existingOp[0].id]
       );
     } else {
       // Create new RECEIPT operation
+      const convertedAmount = rate ? (receipt[0].total_amount / rate) : null;
       await connection.execute(
-        'INSERT INTO delivery_operations (delivery_driver_id, stock_receipt_id, sum, currency, type) VALUES (?, ?, ?, ?, ?)',
-        [delivery_driver_id, receipt_id, delivery_cost, currency || null, 'RECEIPT']
+        'INSERT INTO delivery_operations (delivery_driver_id, stock_receipt_id, sum, currency, rate, converted_sum, type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [delivery_driver_id, receipt_id, receipt[0].total_amount, currency || null, rate || null, convertedAmount, 'RECEIPT']
       );
     }
 
@@ -4848,6 +4859,8 @@ app.put('/api/delivery-operations/receipt/:receipt_id/delivery-cost', authMiddle
       message: 'Delivery cost updated successfully',
       delivery_cost: delivery_cost,
       currency: currency !== undefined ? currency : existingOp[0]?.currency,
+      rate: rate || null,
+      converted_sum: rate ? (receipt[0].total_amount / rate) : null,
       receipt_id: parseInt(receipt_id),
       new_balance: newBalance
     });
