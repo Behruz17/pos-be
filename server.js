@@ -2680,6 +2680,115 @@ app.post('/api/customers/:id/update-balance', authMiddleware, async (req, res) =
 
 // Sales Management Routes
 
+// POST /api/sales/drafts - Save sale as draft
+app.post('/api/sales/drafts', authMiddleware, async (req, res) => {
+  try {
+    const { store_id, warehouse_id, customer_id, customer_name, phone, items, payment_status = 'UNPAID', notes } = req.body;
+
+    // Validate required fields
+    if (!store_id || !warehouse_id) {
+      return res.status(400).json({ error: 'Store ID and Warehouse ID are required' });
+    }
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items array is required' });
+    }
+
+    // Calculate total amount
+    const total_amount = items.reduce((sum, item) => sum + (parseFloat(item.unit_price) * parseInt(item.quantity)), 0);
+
+    // Get user's store_id for security
+    const userStoreId = req.user.role === 'ADMIN' ? store_id : req.user.store_id;
+    if (userStoreId !== parseInt(store_id)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const [result] = await db.execute(
+      `INSERT INTO sale_drafts (user_id, store_id, warehouse_id, customer_id, customer_name, phone, items, total_amount, payment_status, notes) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [req.user.id, userStoreId, warehouse_id, customer_id || null, customer_name || null, phone || null, 
+       JSON.stringify(items), total_amount, payment_status, notes || null]
+    );
+
+    res.status(201).json({
+      id: result.insertId,
+      message: 'Sale draft saved successfully',
+      draft: {
+        id: result.insertId,
+        store_id: userStoreId,
+        warehouse_id: parseInt(warehouse_id),
+        customer_id: customer_id || null,
+        customer_name: customer_name || null,
+        phone: phone || null,
+        items: items,
+        total_amount: parseFloat(total_amount.toFixed(2)),
+        payment_status: payment_status,
+        notes: notes || null
+      }
+    });
+  } catch (error) {
+    console.error('Save sale draft error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/sales/drafts - Get user's last sale draft
+app.get('/api/sales/drafts', authMiddleware, async (req, res) => {
+  try {
+    const userStoreId = req.user.role === 'ADMIN' ? req.query.store_id : req.user.store_id;
+    let storeCondition = '';
+    
+    if (userStoreId) {
+      storeCondition = 'AND sd.store_id = ' + parseInt(userStoreId);
+    }
+
+    const [drafts] = await db.execute(
+      `SELECT sd.id, sd.store_id, sd.warehouse_id, sd.customer_id, sd.customer_name, sd.phone, 
+              sd.items, sd.total_amount, sd.payment_status, sd.notes, sd.created_at, sd.updated_at,
+              s.name as store_name, w.name as warehouse_name
+       FROM sale_drafts sd
+       LEFT JOIN stores s ON sd.store_id = s.id
+       LEFT JOIN warehouses w ON sd.warehouse_id = w.id
+       WHERE sd.user_id = ? ${storeCondition}
+       ORDER BY sd.updated_at DESC
+       LIMIT 1`,
+      [req.user.id]
+    );
+
+    // Parse items JSON for each draft
+    const formattedDrafts = drafts.map(draft => ({
+      ...draft,
+      items: JSON.parse(draft.items)
+    }));
+
+    res.json(formattedDrafts[0] || null);
+  } catch (error) {
+    console.error('Get sale drafts error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// DELETE /api/sales/drafts/:id - Delete sale draft
+app.delete('/api/sales/drafts/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [result] = await db.execute(
+      'DELETE FROM sale_drafts WHERE id = ? AND user_id = ?',
+      [id, req.user.id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Draft not found' });
+    }
+
+    res.json({ message: 'Sale draft deleted successfully' });
+  } catch (error) {
+    console.error('Delete sale draft error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // POST /api/sales
 app.post('/api/sales', authMiddleware, async (req, res) => {
   try {
