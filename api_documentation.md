@@ -557,7 +557,8 @@
     "product_code": "UNIQUE_CODE",
     "image": "Ссылка на изображение товара",
     "notification_threshold": 10,
-    "total_stock": 5
+    "total_stock": 5,
+    "last_supplier_id": 3
   }
 ]
 ```
@@ -1745,11 +1746,28 @@
       "sum": 1000.00,
       "type": "RECEIPT",
       "note": "Закупка",
-      "date": "2023-01-01T00:00:00.000Z"
+      "date": "2023-01-01T00:00:00.000Z",
+      "items": [
+        {
+          "id": 1,
+          "product_id": 5,
+          "product_name": "Название товара",
+          "manufacturer": "Производитель",
+          "image": "Ссылка на изображение",
+          "quantity": 10,
+          "price": 100.00,
+          "total": 1000.00
+        }
+      ]
     }
   ]
 }
 ```
+
+**Примечания:**
+- Поле `items` содержит массив товаров для операций типа `RECEIPT`, `SALE`, `RETURN`
+- Для операций типа `PAYMENT_TO_RESELLER` и `PAYMENT_FROM_RESELLER` поле `items` будет пустым массивом `[]`
+- Для старых операций, созданных до добавления этой функции, поле `items` также будет пустым
 
 ### DELETE /api/resellers/:id
 **Назначение:** Удаление реселлера (мягкое удаление)  

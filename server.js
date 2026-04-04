@@ -555,14 +555,23 @@ app.delete('/api/products/:id', authMiddleware, async (req, res) => {
 app.get('/api/products/missing', authMiddleware, async (req, res) => {
   try {
     // Get all products with their notification thresholds and total stock across all warehouses
+    // Also get the last supplier who delivered this product
     const [rows] = await db.execute(
-      `SELECT p.id, p.name, p.manufacturer, p.product_code, p.image, p.notification_threshold, COALESCE(total_stock.total_quantity, 0) as total_stock
+      `SELECT p.id, p.name, p.manufacturer, p.product_code, p.image, p.notification_threshold, COALESCE(total_stock.total_quantity, 0) as total_stock,
+        COALESCE(last_supplier.supplier_id, NULL) as last_supplier_id
        FROM products p
        LEFT JOIN (
          SELECT product_id, SUM(total_pieces) as total_quantity
          FROM warehouse_stock
          GROUP BY product_id
        ) total_stock ON p.id = total_stock.product_id
+       LEFT JOIN (
+         SELECT sri.product_id, sr.supplier_id,
+         ROW_NUMBER() OVER (PARTITION BY sri.product_id ORDER BY sr.created_at DESC) as rn
+         FROM stock_receipt_items sri
+         JOIN stock_receipts sr ON sri.receipt_id = sr.id
+         WHERE sr.supplier_id IS NOT NULL
+       ) last_supplier ON p.id = last_supplier.product_id AND last_supplier.rn = 1
        WHERE COALESCE(total_stock.total_quantity, 0) < p.notification_threshold
        ORDER BY p.name`
     );
@@ -4508,6 +4517,12 @@ app.post('/api/resellers/:id/operations', authMiddleware, async (req, res) => {
           continue; // Skip invalid products
         }
 
+        // Save item to reseller_operation_items
+        await db.execute(
+          'INSERT INTO reseller_operation_items (operation_id, product_id, quantity, price, total) VALUES (?, ?, ?, ?, ?)',
+          [operationId, productId, quantity, price, total]
+        );
+
         if (type === 'RECEIPT') {
           // Add stock when receiving from reseller
           await db.execute(
@@ -4552,7 +4567,12 @@ app.get('/api/resellers/:id/operations', authMiddleware, async (req, res) => {
     const { type, store_id, limit = 50 } = req.query;
 
     // Check if reseller exists
-    const [existingReseller] = await db.execute('SELECT id, name, balance FROM resellers WHERE id = ?', [id]);
+    const idValue = parseInt(id, 10);
+    if (isNaN(idValue)) {
+      return res.status(400).json({ error: 'Invalid reseller ID' });
+    }
+    
+    const [existingReseller] = await db.execute('SELECT id, name, balance FROM resellers WHERE id = ?', [idValue]);
 
     if (existingReseller.length === 0) {
       return res.status(404).json({ error: 'Reseller not found' });
@@ -4560,10 +4580,7 @@ app.get('/api/resellers/:id/operations', authMiddleware, async (req, res) => {
 
     // Build query with optional filters
     let query = `SELECT ro.id, ro.reseller_id, ro.store_id, ro.sum, ro.type, ro.note, ro.date, s.name as store_name FROM reseller_operations ro LEFT JOIN stores s ON ro.store_id = s.id WHERE ro.reseller_id = ?`;
-    let params = [parseInt(id, 10)];
-    
-    console.log('Request params:', { id, type, store_id, limit });
-    console.log('Initial params:', params);
+    let params = [idValue];
 
     if (type) {
       const validTypes = ['RECEIPT', 'SALE', 'PAYMENT_TO_RESELLER', 'PAYMENT_FROM_RESELLER', 'RETURN'];
@@ -4575,20 +4592,35 @@ app.get('/api/resellers/:id/operations', authMiddleware, async (req, res) => {
     }
 
     if (store_id) {
-      query += ' AND ro.store_id = ?';
-      params.push(parseInt(store_id, 10));
+      const storeIdValue = parseInt(store_id, 10);
+      if (!isNaN(storeIdValue)) {
+        query += ' AND ro.store_id = ?';
+        params.push(storeIdValue);
+      }
     }
 
-    query += ' ORDER BY ro.date DESC LIMIT 50';
-
-    console.log('Final query:', query);
-    console.log('Final params:', params);
+    query += ' ORDER BY ro.date DESC LIMIT ' + (isNaN(parseInt(limit, 10)) ? 50 : parseInt(limit, 10));
 
     const [operations] = await db.execute(query, params);
 
+    // Get items for each operation
+    const operationsWithItems = await Promise.all(
+      operations.map(async (operation) => {
+        const [items] = await db.execute(
+          `SELECT roi.id, roi.product_id, p.name as product_name, p.manufacturer, p.image, 
+                  roi.quantity, roi.price, roi.total
+           FROM reseller_operation_items roi
+           JOIN products p ON roi.product_id = p.id
+           WHERE roi.operation_id = ?`,
+          [operation.id]
+        );
+        return { ...operation, items };
+      })
+    );
+
     res.json({
       reseller: existingReseller[0],
-      operations: operations
+      operations: operationsWithItems
     });
   } catch (error) {
     console.error('Get reseller operations error:', error);
