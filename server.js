@@ -4442,26 +4442,32 @@ app.post('/api/resellers/:id/payment', authMiddleware, async (req, res) => {
 
 // POST /api/resellers/:id/operations - Create operation (RECEIPT, SALE, RETURN) with items
 app.post('/api/resellers/:id/operations', authMiddleware, async (req, res) => {
+  const connection = await db.getConnection();
   try {
     const { id } = req.params;
     const { type, amount, store_id, note, items } = req.body;
 
     // Validate required fields
     if (!type || !['RECEIPT', 'SALE', 'RETURN'].includes(type)) {
+      connection.release();
       return res.status(400).json({ error: 'Type must be RECEIPT, SALE, or RETURN' });
     }
 
     // Check if reseller exists
-    const [existingReseller] = await db.execute('SELECT id, balance FROM resellers WHERE id = ? AND status = 1', [id]);
+    const [existingReseller] = await connection.execute('SELECT id, balance FROM resellers WHERE id = ? AND status = 1', [id]);
 
     if (existingReseller.length === 0) {
+      connection.release();
       return res.status(404).json({ error: 'Reseller not found' });
     }
 
-    // Validate store if provided and get warehouse_id\r\n    let storeId = null;\r\n    let warehouseId = null;
+    // Validate store if provided and get warehouse_id
+    let storeId = null;
+    let warehouseId = null;
     if (store_id) {
-      const [store] = await db.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [store_id]);
+      const [store] = await connection.execute('SELECT id, warehouse_id FROM stores WHERE id = ?', [store_id]);
       if (store.length === 0) {
+        connection.release();
         return res.status(400).json({ error: 'Store not found' });
       }
       storeId = store_id;
@@ -4471,6 +4477,7 @@ app.post('/api/resellers/:id/operations', authMiddleware, async (req, res) => {
     // Calculate total amount from items (required)
     let totalAmount = 0;
     if (!items || !Array.isArray(items) || items.length === 0) {
+      connection.release();
       return res.status(400).json({ error: 'Items array is required' });
     }
     
@@ -4480,80 +4487,114 @@ app.post('/api/resellers/:id/operations', authMiddleware, async (req, res) => {
       return sum + (qty * price);
     }, 0);
 
-    // Update reseller balance based on operation type
-    let newBalance;
-    if (type === 'RECEIPT') {
-      // You receive goods from reseller - you owe them (balance increases)
-      newBalance = parseFloat(existingReseller[0].balance) + totalAmount;
-    } else if (type === 'SALE') {
-      // You sell goods to reseller - they owe you (balance decreases)
-      newBalance = parseFloat(existingReseller[0].balance) - totalAmount;
-    } else if (type === 'RETURN') {
-      // Return - decreases balance (either direction depending on context)
-      newBalance = parseFloat(existingReseller[0].balance) - totalAmount;
-    }
-
-    await db.execute('UPDATE resellers SET balance = ? WHERE id = ?', [newBalance, id]);
-
-    // Record the operation
-    const [result] = await db.execute(
-      'INSERT INTO reseller_operations (reseller_id, store_id, sum, type, note) VALUES (?, ?, ?, ?, ?)',
-      [id, storeId, totalAmount, type, note || null]
-    );
-
-    const operationId = result.insertId;
-
-    // If items provided, update stock and record items
-    if (items && Array.isArray(items) && items.length > 0) {
+    // Pre-check stock availability for SALE operations before transaction
+    if (type === 'SALE') {
       for (const item of items) {
         const productId = item.product_id;
         const quantity = parseFloat(item.quantity) || 0;
-        const price = parseFloat(item.price) || 0;
-        const total = quantity * price;
 
-        // Validate product exists
-        const [product] = await db.execute('SELECT id, name FROM products WHERE id = ?', [productId]);
-        if (product.length === 0) {
-          continue; // Skip invalid products
-        }
-
-        // Save item to reseller_operation_items
-        await db.execute(
-          'INSERT INTO reseller_operation_items (operation_id, product_id, quantity, price, total) VALUES (?, ?, ?, ?, ?)',
-          [operationId, productId, quantity, price, total]
+        const [stockCheck] = await connection.execute(
+          'SELECT total_pieces FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
+          [warehouseId, productId]
         );
 
-        if (type === 'RECEIPT') {
-          // Add stock when receiving from reseller
-          await db.execute(
-            'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE total_pieces = total_pieces + ?',
-            [warehouseId, productId, quantity, quantity]
-          );
-        } else if (type === 'SALE') {
-          // Remove stock when selling to reseller
-          await db.execute(
-            'UPDATE warehouse_stock SET total_pieces = total_pieces - ? WHERE product_id = ? AND warehouse_id = ?',
-            [quantity, productId, warehouseId]
-          );
-        } else if (type === 'RETURN') {
-          // Add stock back on return
-          await db.execute(
-            'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE total_pieces = total_pieces + ?',
-            [warehouseId, productId, quantity, quantity]
-          );
+        if (stockCheck.length === 0 || stockCheck[0].total_pieces < quantity) {
+          const availableStock = stockCheck.length > 0 ? stockCheck[0].total_pieces : 0;
+          connection.release();
+          return res.status(400).json({
+            error: `Not enough stock for product ID: ${productId}. Requested: ${quantity}, Available: ${availableStock}`
+          });
         }
       }
     }
 
-    res.json({
-      operation_id: operationId,
-      reseller_id: id,
-      type: type,
-      amount: totalAmount,
-      items_count: items ? items.length : 0,
-      new_balance: newBalance,
-      message: 'Operation recorded successfully'
-    });
+    // Start transaction
+    await connection.beginTransaction();
+
+    try {
+      // Update reseller balance based on operation type
+      let newBalance;
+      if (type === 'RECEIPT') {
+        // You receive goods from reseller - you owe them (balance increases)
+        newBalance = parseFloat(existingReseller[0].balance) + totalAmount;
+      } else if (type === 'SALE') {
+        // You sell goods to reseller - they owe you (balance decreases)
+        newBalance = parseFloat(existingReseller[0].balance) - totalAmount;
+      } else if (type === 'RETURN') {
+        // Return - decreases balance (either direction depending on context)
+        newBalance = parseFloat(existingReseller[0].balance) - totalAmount;
+      }
+
+      await connection.execute('UPDATE resellers SET balance = ? WHERE id = ?', [newBalance, id]);
+
+      // Record the operation
+      const [result] = await connection.execute(
+        'INSERT INTO reseller_operations (reseller_id, store_id, sum, type, note) VALUES (?, ?, ?, ?, ?)',
+        [id, storeId, totalAmount, type, note || null]
+      );
+
+      const operationId = result.insertId;
+
+      // If items provided, update stock and record items
+      if (items && Array.isArray(items) && items.length > 0) {
+        for (const item of items) {
+          const productId = item.product_id;
+          const quantity = parseFloat(item.quantity) || 0;
+          const price = parseFloat(item.price) || 0;
+          const total = quantity * price;
+
+          // Validate product exists
+          const [product] = await connection.execute('SELECT id, name FROM products WHERE id = ?', [productId]);
+          if (product.length === 0) {
+            continue; // Skip invalid products
+          }
+
+          // Save item to reseller_operation_items
+          await connection.execute(
+            'INSERT INTO reseller_operation_items (operation_id, product_id, quantity, price, total) VALUES (?, ?, ?, ?, ?)',
+            [operationId, productId, quantity, price, total]
+          );
+
+          if (type === 'RECEIPT') {
+            // Add stock when receiving from reseller
+            await connection.execute(
+              'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE total_pieces = total_pieces + ?',
+              [warehouseId, productId, quantity, quantity]
+            );
+          } else if (type === 'SALE') {
+            // Remove stock when selling to reseller
+            await connection.execute(
+              'UPDATE warehouse_stock SET total_pieces = total_pieces - ? WHERE product_id = ? AND warehouse_id = ?',
+              [quantity, productId, warehouseId]
+            );
+          } else if (type === 'RETURN') {
+            // Add stock back on return
+            await connection.execute(
+              'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE total_pieces = total_pieces + ?',
+              [warehouseId, productId, quantity, quantity]
+            );
+          }
+        }
+      }
+
+      // Commit transaction
+      await connection.commit();
+      connection.release();
+
+      res.json({
+        operation_id: operationId,
+        reseller_id: id,
+        type: type,
+        amount: totalAmount,
+        items_count: items ? items.length : 0,
+        new_balance: newBalance,
+        message: 'Operation recorded successfully'
+      });
+    } catch (error) {
+      await connection.rollback();
+      connection.release();
+      throw error;
+    }
   } catch (error) {
     console.error('Record reseller operation error:', error);
     res.status(500).json({ error: 'Server error' });
