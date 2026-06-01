@@ -766,17 +766,29 @@
 {
   "from_warehouse_id": 1,
   "to_warehouse_id": 2,
-  "product_id": 1,
-  "total_pieces": 15,
-  "weight_kg": 25.0,
-  "volume_cbm": 1.2,
+  "items": [
+    {
+      "product_id": 1,
+      "total_pieces": 15,
+      "weight_kg": 25.0,
+      "volume_cbm": 1.2
+    },
+    {
+      "product_id": 2,
+      "total_pieces": 4,
+      "weight_kg": 6.5,
+      "volume_cbm": 0.4
+    }
+  ],
   "reason": "Перемещение между складами"
 }
 ```
+**Примечание:** старый формат с одним `product_id`, `total_pieces`, `weight_kg`, `volume_cbm` на верхнем уровне также поддерживается для обратной совместимости.
 **Ответ:**
 ```json
 {
-  "message": "Stock moved successfully"
+  "message": "Stock moved successfully",
+  "moved_items": 2
 }
 ```
 

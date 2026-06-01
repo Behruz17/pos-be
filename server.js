@@ -1677,10 +1677,33 @@ app.put('/api/warehouse/stock/:id', authMiddleware, async (req, res) => {
 app.post('/api/warehouse/stock/move', authMiddleware, async (req, res) => {
   try {
     const { from_warehouse_id, to_warehouse_id, product_id, total_pieces, weight_kg, volume_cbm, reason } = req.body;
+    const items = Array.isArray(req.body.items)
+      ? req.body.items
+      : [{ product_id, total_pieces, weight_kg, volume_cbm }];
 
-    const qty = parseInt(total_pieces, 10);
-    if (!from_warehouse_id || !to_warehouse_id || !product_id || !Number.isFinite(qty) || qty <= 0) {
+    if (!from_warehouse_id || !to_warehouse_id || items.length === 0) {
       return res.status(400).json({ error: 'Required fields are missing or invalid' });
+    }
+
+    const normalizedItems = items.map((item) => ({
+      product_id: item.product_id,
+      total_pieces: parseInt(item.total_pieces, 10),
+      weight_kg: parseFloat(item.weight_kg || 0),
+      volume_cbm: parseFloat(item.volume_cbm || 0)
+    }));
+
+    const invalidItem = normalizedItems.find((item) => (
+      !item.product_id
+      || !Number.isFinite(item.total_pieces)
+      || item.total_pieces <= 0
+      || !Number.isFinite(item.weight_kg)
+      || item.weight_kg < 0
+      || !Number.isFinite(item.volume_cbm)
+      || item.volume_cbm < 0
+    ));
+
+    if (invalidItem) {
+      return res.status(400).json({ error: 'Each item must have valid product_id and positive total_pieces' });
     }
 
     // Start transaction
@@ -1688,126 +1711,125 @@ app.post('/api/warehouse/stock/move', authMiddleware, async (req, res) => {
     await connection.beginTransaction();
 
     try {
-      // Get current stock in source warehouse
-      const [fromStock] = await connection.execute(
-        'SELECT id, total_pieces as current_total_pieces, weight_kg as current_weight, volume_cbm as current_volume FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
-        [from_warehouse_id, product_id]
-      );
+      for (const item of normalizedItems) {
+        const { product_id: itemProductId, total_pieces: qty, weight_kg: itemWeight, volume_cbm: itemVolume } = item;
 
-      if (fromStock.length === 0) {
-        await connection.rollback();
-        connection.release();
-        return res.status(400).json({ error: 'Not enough stock in source warehouse' });
-      }
+        // Get current stock in source warehouse
+        const [fromStock] = await connection.execute(
+          'SELECT id, total_pieces as current_total_pieces, weight_kg as current_weight, volume_cbm as current_volume FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
+          [from_warehouse_id, itemProductId]
+        );
 
-      const stock = fromStock[0];
+        if (fromStock.length === 0) {
+          await connection.rollback();
+          connection.release();
+          return res.status(400).json({ error: `Not enough stock in source warehouse for product ID: ${itemProductId}` });
+        }
 
-      // Check if we have enough stock
-      if (stock.current_total_pieces < qty) {
-        await connection.rollback();
-        connection.release();
-        return res.status(400).json({ error: 'Not enough stock in source warehouse' });
-      }
+        const stock = fromStock[0];
 
-      // Check if we have enough weight and volume to subtract
-      const subtractWeight = parseFloat(weight_kg || 0);
-      const subtractVolume = parseFloat(volume_cbm || 0);
+        // Check if we have enough stock
+        if (stock.current_total_pieces < qty) {
+          await connection.rollback();
+          connection.release();
+          return res.status(400).json({ error: `Not enough stock in source warehouse for product ID: ${itemProductId}` });
+        }
 
-      if (stock.current_weight != null && subtractWeight > parseFloat(stock.current_weight || 0)) {
-        await connection.rollback();
-        connection.release();
-        return res.status(400).json({ error: 'Not enough weight in source warehouse' });
-      }
+        // Check if we have enough weight and volume to subtract
+        if (stock.current_weight != null && itemWeight > parseFloat(stock.current_weight || 0)) {
+          await connection.rollback();
+          connection.release();
+          return res.status(400).json({ error: `Not enough weight in source warehouse for product ID: ${itemProductId}` });
+        }
 
-      if (stock.current_volume != null && subtractVolume > parseFloat(stock.current_volume || 0)) {
-        await connection.rollback();
-        connection.release();
-        return res.status(400).json({ error: 'Not enough volume in source warehouse' });
-      }
+        if (stock.current_volume != null && itemVolume > parseFloat(stock.current_volume || 0)) {
+          await connection.rollback();
+          connection.release();
+          return res.status(400).json({ error: `Not enough volume in source warehouse for product ID: ${itemProductId}` });
+        }
 
-      // Update source warehouse (subtract stock)
-      const newFromTotalPieces = stock.current_total_pieces - qty;
-      const newFromWeight = Math.max(0, parseFloat(stock.current_weight || 0) - parseFloat(weight_kg || 0));
-      const newFromVolume = Math.max(0, parseFloat(stock.current_volume || 0) - parseFloat(volume_cbm || 0));
-
-      await connection.execute(
-        'UPDATE warehouse_stock SET total_pieces = ?, weight_kg = ?, volume_cbm = ?, updated_at = NOW() WHERE id = ?',
-        [newFromTotalPieces, newFromWeight, newFromVolume, stock.id]
-      );
-
-      // Record the OUT change
-      await connection.execute(
-        `INSERT INTO stock_changes 
-         (warehouse_id, product_id, user_id, change_type, old_total_pieces, new_total_pieces,
-          old_weight_kg, new_weight_kg, old_volume_cbm, new_volume_cbm, reason)
-         VALUES (?, ?, ?, 'OUT', ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          from_warehouse_id, product_id, req.user.id,
-          stock.current_total_pieces, newFromTotalPieces,
-          stock.current_weight, newFromWeight,
-          stock.current_volume, newFromVolume,
-          reason || `Transfer to warehouse ${to_warehouse_id}`
-        ]
-      );
-
-      // Update destination warehouse (add stock)
-      const [toStock] = await connection.execute(
-        'SELECT id, total_pieces as current_total_pieces, weight_kg as current_weight, volume_cbm as current_volume FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
-        [to_warehouse_id, product_id]
-      );
-
-      if (toStock.length > 0) {
-        // Update existing stock in destination
-        const newToTotalPieces = toStock[0].current_total_pieces + qty;
-        const newToWeight = parseFloat(toStock[0].current_weight || 0) + parseFloat(weight_kg || 0);
-        const newToVolume = parseFloat(toStock[0].current_volume || 0) + parseFloat(volume_cbm || 0);
+        // Update source warehouse (subtract stock)
+        const newFromTotalPieces = stock.current_total_pieces - qty;
+        const newFromWeight = Math.max(0, parseFloat(stock.current_weight || 0) - itemWeight);
+        const newFromVolume = Math.max(0, parseFloat(stock.current_volume || 0) - itemVolume);
 
         await connection.execute(
           'UPDATE warehouse_stock SET total_pieces = ?, weight_kg = ?, volume_cbm = ?, updated_at = NOW() WHERE id = ?',
-          [newToTotalPieces, newToWeight, newToVolume, toStock[0].id]
+          [newFromTotalPieces, newFromWeight, newFromVolume, stock.id]
         );
-      } else {
-        // Create new stock record in destination
+
+        // Record the OUT change
         await connection.execute(
-          'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces, weight_kg, volume_cbm) VALUES (?, ?, ?, ?, ?)',
-          [to_warehouse_id, product_id, qty, weight_kg || 0, volume_cbm || 0]
+          `INSERT INTO stock_changes 
+           (warehouse_id, product_id, user_id, change_type, old_total_pieces, new_total_pieces,
+            old_weight_kg, new_weight_kg, old_volume_cbm, new_volume_cbm, reason)
+           VALUES (?, ?, ?, 'OUT', ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            from_warehouse_id, itemProductId, req.user.id,
+            stock.current_total_pieces, newFromTotalPieces,
+            stock.current_weight, newFromWeight,
+            stock.current_volume, newFromVolume,
+            reason || `Transfer to warehouse ${to_warehouse_id}`
+          ]
+        );
+
+        // Update destination warehouse (add stock)
+        const [toStock] = await connection.execute(
+          'SELECT id, total_pieces as current_total_pieces, weight_kg as current_weight, volume_cbm as current_volume FROM warehouse_stock WHERE warehouse_id = ? AND product_id = ?',
+          [to_warehouse_id, itemProductId]
+        );
+
+        if (toStock.length > 0) {
+          // Update existing stock in destination
+          const newToTotalPieces = toStock[0].current_total_pieces + qty;
+          const newToWeight = parseFloat(toStock[0].current_weight || 0) + itemWeight;
+          const newToVolume = parseFloat(toStock[0].current_volume || 0) + itemVolume;
+
+          await connection.execute(
+            'UPDATE warehouse_stock SET total_pieces = ?, weight_kg = ?, volume_cbm = ?, updated_at = NOW() WHERE id = ?',
+            [newToTotalPieces, newToWeight, newToVolume, toStock[0].id]
+          );
+        } else {
+          // Create new stock record in destination
+          await connection.execute(
+            'INSERT INTO warehouse_stock (warehouse_id, product_id, total_pieces, weight_kg, volume_cbm) VALUES (?, ?, ?, ?, ?)',
+            [to_warehouse_id, itemProductId, qty, itemWeight, itemVolume]
+          );
+        }
+
+        // Record the IN change (correct old/new values)
+        const toOldPieces = toStock.length > 0 ? toStock[0].current_total_pieces : 0;
+        const toOldWeight = toStock.length > 0 ? (parseFloat(toStock[0].current_weight) || 0) : 0;
+        const toOldVolume = toStock.length > 0 ? (parseFloat(toStock[0].current_volume) || 0) : 0;
+
+        const toNewPieces = toOldPieces + qty;
+        const toNewWeight = toOldWeight + itemWeight;
+        const toNewVolume = toOldVolume + itemVolume;
+
+        await connection.execute(
+          `INSERT INTO stock_changes 
+           (warehouse_id, product_id, user_id, change_type,
+            old_total_pieces, new_total_pieces,
+            old_weight_kg, new_weight_kg,
+            old_volume_cbm, new_volume_cbm, reason)
+           VALUES (?, ?, ?, 'IN', ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            to_warehouse_id, itemProductId, req.user.id,
+            toOldPieces, toNewPieces,
+            toOldWeight, toNewWeight,
+            toOldVolume, toNewVolume,
+            reason || `Transfer from warehouse ${from_warehouse_id}`
+          ]
         );
       }
-
-      // Record the IN change (correct old/new values)
-      const toOldPieces = toStock.length > 0 ? toStock[0].current_total_pieces : 0;
-      const toOldWeight = toStock.length > 0 ? (parseFloat(toStock[0].current_weight) || 0) : 0;
-      const toOldVolume = toStock.length > 0 ? (parseFloat(toStock[0].current_volume) || 0) : 0;
-
-      const addWeight = parseFloat(weight_kg || 0);
-      const addVolume = parseFloat(volume_cbm || 0);
-
-      const toNewPieces = toOldPieces + qty;
-      const toNewWeight = toOldWeight + addWeight;
-      const toNewVolume = toOldVolume + addVolume;
-
-      await connection.execute(
-        `INSERT INTO stock_changes 
-         (warehouse_id, product_id, user_id, change_type,
-          old_total_pieces, new_total_pieces,
-          old_weight_kg, new_weight_kg,
-          old_volume_cbm, new_volume_cbm, reason)
-         VALUES (?, ?, ?, 'IN', ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          to_warehouse_id, product_id, req.user.id,
-          toOldPieces, toNewPieces,
-          toOldWeight, toNewWeight,
-          toOldVolume, toNewVolume,
-          reason || `Transfer from warehouse ${from_warehouse_id}`
-        ]
-      );
 
       // Commit transaction
       await connection.commit();
       connection.release();
 
       res.json({
-        message: 'Stock moved successfully'
+        message: 'Stock moved successfully',
+        moved_items: normalizedItems.length
       });
     } catch (error) {
       await connection.rollback();
