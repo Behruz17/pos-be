@@ -2763,14 +2763,30 @@ app.post('/api/sales/drafts', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/sales/drafts - Get user's last sale draft
+// GET /api/sales/drafts - Get user's last sale draft, or all drafts for a customer
 app.get('/api/sales/drafts', authMiddleware, async (req, res) => {
   try {
     const userStoreId = req.user.role === 'ADMIN' ? req.query.store_id : req.user.store_id;
-    let storeCondition = '';
-    
+    const { customer_id } = req.query;
+    const conditions = ['sd.user_id = ?'];
+    const params = [req.user.id];
+
     if (userStoreId) {
-      storeCondition = 'AND sd.store_id = ' + parseInt(userStoreId);
+      const parsedStoreId = parseInt(userStoreId, 10);
+      if (!Number.isFinite(parsedStoreId)) {
+        return res.status(400).json({ error: 'Invalid store_id' });
+      }
+      conditions.push('sd.store_id = ?');
+      params.push(parsedStoreId);
+    }
+
+    if (customer_id !== undefined) {
+      const parsedCustomerId = parseInt(customer_id, 10);
+      if (!Number.isFinite(parsedCustomerId)) {
+        return res.status(400).json({ error: 'Invalid customer_id' });
+      }
+      conditions.push('sd.customer_id = ?');
+      params.push(parsedCustomerId);
     }
 
     const [drafts] = await db.execute(
@@ -2780,10 +2796,10 @@ app.get('/api/sales/drafts', authMiddleware, async (req, res) => {
        FROM sale_drafts sd
        LEFT JOIN stores s ON sd.store_id = s.id
        LEFT JOIN warehouses w ON sd.warehouse_id = w.id
-       WHERE sd.user_id = ? ${storeCondition}
+       WHERE ${conditions.join(' AND ')}
        ORDER BY sd.updated_at DESC
-       LIMIT 1`,
-      [req.user.id]
+       ${customer_id !== undefined ? '' : 'LIMIT 1'}`,
+      params
     );
 
     // Parse items JSON for each draft
@@ -2791,6 +2807,10 @@ app.get('/api/sales/drafts', authMiddleware, async (req, res) => {
       ...draft,
       items: JSON.parse(draft.items)
     }));
+
+    if (customer_id !== undefined) {
+      return res.json(formattedDrafts);
+    }
 
     res.json(formattedDrafts[0] || null);
   } catch (error) {
