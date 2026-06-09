@@ -2312,22 +2312,24 @@ app.get('/api/retail-debtors', authMiddleware, async (req, res) => {
     }
 
     const [debtors] = await db.execute(`
-      SELECT 
+      SELECT
         MIN(rd.id) as id,
         rd.customer_name,
         rd.phone,
         rd.store_id,
         MIN(rd.created_at) as created_at,
+        MAX(rd.debt_deadline) as debt_deadline,
         SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) as total_debt,
         SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END) as total_paid,
-        (SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) - 
-         SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END)) as remaining_balance
+        (SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) -
+         SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END)) as remaining_balance,
+        CASE WHEN MAX(rd.debt_deadline) IS NOT NULL AND MAX(rd.debt_deadline) < CURDATE() THEN 1 ELSE 0 END as is_overdue
       FROM retail_debtors rd
       LEFT JOIN retail_operations ro ON rd.id = ro.retail_debtor_id
       ${storeFilter}
       GROUP BY rd.customer_name, rd.phone, rd.store_id
       HAVING remaining_balance > 0
-      ORDER BY remaining_balance DESC
+      ORDER BY is_overdue DESC, remaining_balance DESC
     `, params);
 
     res.json(debtors);
@@ -2430,15 +2432,17 @@ app.get('/api/retail-debtors/:id', authMiddleware, async (req, res) => {
 
     // Get aggregated stats for all debtors with this customer_name
     const [debtorStats] = await db.execute(`
-      SELECT 
+      SELECT
         rd.customer_name,
         rd.phone,
         rd.store_id,
         MIN(rd.created_at) as created_at,
+        MAX(rd.debt_deadline) as debt_deadline,
         SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) as total_debt,
         SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END) as total_paid,
-        (SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) - 
-         SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END)) as remaining_balance
+        (SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) -
+         SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END)) as remaining_balance,
+        CASE WHEN MAX(rd.debt_deadline) IS NOT NULL AND MAX(rd.debt_deadline) < CURDATE() THEN 1 ELSE 0 END as is_overdue
       FROM retail_debtors rd
       LEFT JOIN retail_operations ro ON rd.id = ro.retail_debtor_id
       WHERE rd.customer_name = ? AND rd.store_id = ?
@@ -2968,7 +2972,7 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
 
       // Handle retail debt creation if needed
       if (isRetailDebt) {
-        const { customer_name, phone } = req.body;
+        const { customer_name, phone, debt_deadline } = req.body;
 
         if (!customer_name) {
           await connection.rollback();
@@ -2976,10 +2980,19 @@ app.post('/api/sales', authMiddleware, async (req, res) => {
           return res.status(400).json({ error: 'Customer name is required for retail debt sales' });
         }
 
+        // Validate debt_deadline format if provided
+        let validatedDeadline = null;
+        if (debt_deadline) {
+          const deadlineDate = new Date(debt_deadline);
+          if (!isNaN(deadlineDate.getTime())) {
+            validatedDeadline = debt_deadline;
+          }
+        }
+
         // Create retail debtor (associate with sale's store)
         const [debtorResult] = await connection.execute(
-          'INSERT INTO retail_debtors (customer_name, phone, store_id) VALUES (?, ?, ?)',
-          [customer_name, phone || null, store_id || null]
+          'INSERT INTO retail_debtors (customer_name, phone, store_id, debt_deadline) VALUES (?, ?, ?, ?)',
+          [customer_name, phone || null, store_id || null, validatedDeadline]
         );
 
         const debtorId = debtorResult.insertId;
