@@ -44,6 +44,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Function to get the default warehouse ID
 const getDefaultWarehouseId = async (conn) => {
@@ -2319,6 +2320,8 @@ app.get('/api/retail-debtors', authMiddleware, async (req, res) => {
         rd.store_id,
         MIN(rd.created_at) as created_at,
         MAX(rd.debt_deadline) as debt_deadline,
+        MAX(rd.is_blacklisted) as is_blacklisted,
+        MAX(rd.blacklist_reason) as blacklist_reason,
         SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) as total_debt,
         SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END) as total_paid,
         (SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) -
@@ -2328,8 +2331,8 @@ app.get('/api/retail-debtors', authMiddleware, async (req, res) => {
       LEFT JOIN retail_operations ro ON rd.id = ro.retail_debtor_id
       ${storeFilter}
       GROUP BY rd.customer_name, rd.phone, rd.store_id
-      HAVING remaining_balance > 0
-      ORDER BY is_overdue DESC, remaining_balance DESC
+      HAVING remaining_balance > 0 OR MAX(rd.is_blacklisted) = 1
+      ORDER BY MAX(rd.is_blacklisted) DESC, is_overdue DESC, remaining_balance DESC
     `, params);
 
     res.json(debtors);
@@ -2438,6 +2441,8 @@ app.get('/api/retail-debtors/:id', authMiddleware, async (req, res) => {
         rd.store_id,
         MIN(rd.created_at) as created_at,
         MAX(rd.debt_deadline) as debt_deadline,
+        MAX(rd.is_blacklisted) as is_blacklisted,
+        MAX(rd.blacklist_reason) as blacklist_reason,
         SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) as total_debt,
         SUM(CASE WHEN ro.type IN ('PAYMENT','RETURN') THEN ro.amount ELSE 0 END) as total_paid,
         (SUM(CASE WHEN ro.type = 'DEBT' THEN ro.amount ELSE 0 END) -
@@ -2544,6 +2549,89 @@ app.get('/api/retail-debtors/:id/operations', authMiddleware, async (req, res) =
     res.json(operations);
   } catch (error) {
     console.error('Get retail operations error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PATCH /api/retail-debtors/:id/deadline
+app.patch('/api/retail-debtors/:id/deadline', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { debt_deadline } = req.body;
+
+    if (!debt_deadline) {
+      return res.status(400).json({ error: 'debt_deadline is required' });
+    }
+
+    const deadlineDate = new Date(debt_deadline);
+    if (isNaN(deadlineDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid date format' });
+    }
+
+    const [debtorInfo] = await db.execute(
+      'SELECT customer_name, phone, store_id FROM retail_debtors WHERE id = ?', [id]
+    );
+
+    if (debtorInfo.length === 0) {
+      return res.status(404).json({ error: 'Retail debtor not found' });
+    }
+
+    const debtor = debtorInfo[0];
+
+    if (req.user.role !== 'ADMIN' && debtor.store_id !== req.userStoreId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    await db.execute(
+      'UPDATE retail_debtors SET debt_deadline = ? WHERE customer_name = ? AND store_id = ?',
+      [debt_deadline, debtor.customer_name, debtor.store_id]
+    );
+
+    res.json({ message: 'Deadline updated successfully', debt_deadline });
+  } catch (error) {
+    console.error('Update deadline error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PATCH /api/retail-debtors/:id/blacklist
+app.patch('/api/retail-debtors/:id/blacklist', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { is_blacklisted, blacklist_reason } = req.body;
+
+    if (is_blacklisted === undefined || is_blacklisted === null) {
+      return res.status(400).json({ error: 'is_blacklisted is required' });
+    }
+
+    const [debtorInfo] = await db.execute(
+      'SELECT customer_name, phone, store_id FROM retail_debtors WHERE id = ?', [id]
+    );
+
+    if (debtorInfo.length === 0) {
+      return res.status(404).json({ error: 'Retail debtor not found' });
+    }
+
+    const debtor = debtorInfo[0];
+
+    if (req.user.role !== 'ADMIN' && debtor.store_id !== req.userStoreId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const blacklistValue = is_blacklisted ? 1 : 0;
+    const reasonValue = blacklistValue === 1 ? (blacklist_reason || null) : null;
+
+    await db.execute(
+      'UPDATE retail_debtors SET is_blacklisted = ?, blacklist_reason = ? WHERE customer_name = ? AND store_id = ?',
+      [blacklistValue, reasonValue, debtor.customer_name, debtor.store_id]
+    );
+
+    res.json({
+      message: blacklistValue === 1 ? 'Debtor added to blacklist' : 'Debtor removed from blacklist',
+      is_blacklisted: blacklistValue
+    });
+  } catch (error) {
+    console.error('Toggle blacklist error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
