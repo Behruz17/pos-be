@@ -2594,6 +2594,50 @@ app.patch('/api/retail-debtors/:id/deadline', authMiddleware, async (req, res) =
   }
 });
 
+// POST /api/retail-debtors/blacklist-direct — add person to blacklist without a debt
+app.post('/api/retail-debtors/blacklist-direct', authMiddleware, async (req, res) => {
+  try {
+    const { customer_name, phone, blacklist_reason, store_id } = req.body;
+
+    if (!customer_name || !customer_name.trim()) {
+      return res.status(400).json({ error: 'customer_name is required' });
+    }
+
+    let actualStoreId = store_id;
+    if (req.user.role !== 'ADMIN') {
+      actualStoreId = req.userStoreId;
+    } else if (!actualStoreId) {
+      return res.status(400).json({ error: 'store_id is required for admin' });
+    }
+
+    // Check if a record already exists for this name+store
+    const [existing] = await db.execute(
+      'SELECT id FROM retail_debtors WHERE customer_name = ? AND store_id = ? LIMIT 1',
+      [customer_name.trim(), actualStoreId]
+    );
+
+    if (existing.length > 0) {
+      // Update existing record(s) to blacklisted
+      await db.execute(
+        'UPDATE retail_debtors SET is_blacklisted = 1, blacklist_reason = ? WHERE customer_name = ? AND store_id = ?',
+        [blacklist_reason || null, customer_name.trim(), actualStoreId]
+      );
+      return res.json({ message: 'Debtor added to blacklist', id: existing[0].id });
+    }
+
+    // Create a new record with is_blacklisted = 1 (no debt operations)
+    const [result] = await db.execute(
+      'INSERT INTO retail_debtors (customer_name, phone, store_id, is_blacklisted, blacklist_reason) VALUES (?, ?, ?, 1, ?)',
+      [customer_name.trim(), phone || null, actualStoreId, blacklist_reason || null]
+    );
+
+    res.status(201).json({ message: 'Added to blacklist', id: result.insertId });
+  } catch (error) {
+    console.error('Add to blacklist direct error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // PATCH /api/retail-debtors/:id/blacklist
 app.patch('/api/retail-debtors/:id/blacklist', authMiddleware, async (req, res) => {
   try {
