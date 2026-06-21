@@ -1405,7 +1405,7 @@ app.get('/api/suppliers/stats/payment-summary', authMiddleware, async (req, res)
     const { warehouse_id, start_date, end_date } = req.query;
     
     // Build query with optional filters
-    let whereConditions = ['s.status = 1'];
+    let whereConditions = ['s.status = 1', "s.name != 'ТестовыйПоставщик'"];
     let params = [];
     
     if (warehouse_id) {
